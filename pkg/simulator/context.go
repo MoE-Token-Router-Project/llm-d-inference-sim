@@ -77,6 +77,8 @@ type SimContext struct {
 	latencyCalculator atomic.Pointer[latencyCalcHolder]
 	// Tokenizer used for request tokenization and in /tokenize
 	Tokenizer tokenizer.Tokenizer
+	// moe models expert-parallel routing cost when MoE simulation is enabled.
+	moe *moeSimulator
 }
 
 type latencyCalcHolder struct {
@@ -153,6 +155,14 @@ func (s *SimContext) initialize(ctx context.Context) error {
 	s.Random = common.NewRandom(s.Config().Seed, s.Config().Port)
 
 	s.rebuildLatencyCalculator()
+	if s.Config().EnableMoE {
+		s.moe = newMoESimulator(s.Config())
+		s.logger.V(logging.INFO).Info("MoE simulation enabled",
+			"expert-parallel-size", s.Config().MoEExpertParallelSize,
+			"experts", s.Config().MoENumExperts,
+			"physical-expert-slots", s.Config().MoEPhysicalExpertSlots,
+			"router", s.Config().MoERouter)
+	}
 
 	for _, lora := range s.Config().LoraModules {
 		s.loraAdaptors.Store(lora.Name, lora.Path)
@@ -262,6 +272,7 @@ func (s *SimContext) simulateTTFT(respCtx ResponseContext) {
 		RunningReqs:        s.metrics.nRunningReqs.Load(),
 	}
 	ttft := s.latencyCalc().GetTimeToFirstToken(&params)
+	ttft += s.moePrefillLatency(&params)
 	time.Sleep(ttft)
 	// report ttft in seconds
 	common.WriteToChannel(s.metrics.ttftChan, ttft.Seconds(), s.logger)
@@ -276,8 +287,9 @@ func (s *SimContext) simulateImageGenerationLatency() {
 }
 
 func (s *SimContext) simulateInterTokenLatency() {
-	perTokenLatency := s.latencyCalc().GetInterTokenLatency(&InterTokenParams{
-		RunningReqs: s.metrics.nRunningReqs.Load()})
+	params := InterTokenParams{RunningReqs: s.metrics.nRunningReqs.Load()}
+	perTokenLatency := s.latencyCalc().GetInterTokenLatency(&params)
+	perTokenLatency += s.moeDecodeLatency(&params)
 	time.Sleep(perTokenLatency)
 
 	// report tpot in seconds
