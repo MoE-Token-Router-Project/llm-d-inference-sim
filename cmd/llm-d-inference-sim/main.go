@@ -19,6 +19,7 @@ package main
 
 import (
 	"context"
+	"os"
 
 	"golang.org/x/sync/errgroup"
 	"k8s.io/klog/v2"
@@ -38,6 +39,13 @@ func main() {
 
 	logger.V(logging.INFO).Info("Starting inference simulator")
 
+	startOptions, remainingArgs, err := simulator.ParseStartOptions(os.Args[1:])
+	if err != nil {
+		logger.Error(err, "failed to read startup options")
+		return
+	}
+	os.Args = append([]string{os.Args[0]}, remainingArgs...)
+
 	// parse command line parameters
 	config, err := common.ParseCommandParamsAndLoadConfig()
 	if err != nil {
@@ -49,7 +57,7 @@ func main() {
 		return
 	}
 
-	simulators, err := simulator.Start(ctx, config, logger)
+	simulators, err := simulator.StartWithOptions(ctx, config, logger, startOptions)
 	if err != nil {
 		logger.Error(err, "failed to create inference simulator")
 		return
