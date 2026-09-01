@@ -57,6 +57,10 @@ const (
 	ConstantLatencyCalculator       = "constant"
 	PerPromptTokenLatencyCalculator = "per-token"
 
+	MoERouterSplit       = "split"
+	MoERouterConcentrate = "concentrate"
+	MoERouterHeuristic   = "heuristic"
+
 	DefaultDSTableName = "llmd"
 )
 
@@ -259,6 +263,36 @@ type Configuration struct {
 	// DPSize is data parallel size - a number of ranks to run, minimum is 1, maximum is 8, default is 1
 	DPSize int `yaml:"data-parallel-size" json:"data-parallel-size"`
 
+	// EnableMoE enables expert-parallel MoE latency simulation inside each data-parallel rank.
+	EnableMoE bool `yaml:"enable-moe" json:"enable-moe"`
+	// MoEExpertParallelSize is the number of simulated GPUs that host expert replicas.
+	MoEExpertParallelSize int `yaml:"moe-expert-parallel-size" json:"moe-expert-parallel-size"`
+	// MoENumExperts is the number of logical experts per MoE layer.
+	MoENumExperts int `yaml:"moe-num-experts" json:"moe-num-experts"`
+	// MoEPhysicalExpertSlots is the total number of expert replicas placed across the expert-parallel GPUs.
+	MoEPhysicalExpertSlots int `yaml:"moe-physical-expert-slots" json:"moe-physical-expert-slots"`
+	// MoETopK is the number of experts selected per token.
+	MoETopK int `yaml:"moe-top-k" json:"moe-top-k"`
+	// MoENumLayers is the number of MoE layers included in the latency model.
+	MoENumLayers int `yaml:"moe-num-layers" json:"moe-num-layers"`
+	// MoERouter selects the replica routing policy.
+	MoERouter string `yaml:"moe-router" json:"moe-router"`
+	// MoEExpertPopularityAlpha controls the synthetic power-law expert popularity distribution.
+	MoEExpertPopularityAlpha float64 `yaml:"moe-expert-popularity-alpha" json:"moe-expert-popularity-alpha"`
+	// MoEHiddenSize and MoEIntermediateSize define the expert FFN dimensions used by the cost model.
+	MoEHiddenSize       int `yaml:"moe-hidden-size" json:"moe-hidden-size"`
+	MoEIntermediateSize int `yaml:"moe-intermediate-size" json:"moe-intermediate-size"`
+	// MoEBytesPerElement defines the simulated tensor element width, for example 2 for BF16.
+	MoEBytesPerElement int `yaml:"moe-bytes-per-element" json:"moe-bytes-per-element"`
+	// MoEGPUFlops is peak simulated GPU floating-point throughput in FLOP/s.
+	MoEGPUFlops float64 `yaml:"moe-gpu-flops" json:"moe-gpu-flops"`
+	// MoEGPUMemoryBandwidth is simulated GPU memory bandwidth in bytes/s.
+	MoEGPUMemoryBandwidth float64 `yaml:"moe-gpu-memory-bandwidth" json:"moe-gpu-memory-bandwidth"`
+	// MoEInterconnectBandwidth is per-GPU expert-parallel interconnect bandwidth in bytes/s.
+	MoEInterconnectBandwidth float64 `yaml:"moe-interconnect-bandwidth" json:"moe-interconnect-bandwidth"`
+	// MoEInterconnectLatency is the one-way latency for each simulated all-to-all phase.
+	MoEInterconnectLatency time.Duration `yaml:"moe-interconnect-latency" json:"moe-interconnect-latency"`
+
 	// Rank specifies the rank of this instance. Only used when running Data Parallel
 	// ranks as separate processes. If set, data-parallel-size is ignored
 	Rank int `yaml:"data-parallel-rank" json:"data-parallel-rank"`
@@ -390,6 +424,21 @@ func newConfig() *Configuration {
 		KVEventsReplayQueueSize:                   1024,
 		EventBatchSize:                            16,
 		DPSize:                                    1,
+		EnableMoE:                                 false,
+		MoEExpertParallelSize:                     8,
+		MoENumExperts:                             60,
+		MoEPhysicalExpertSlots:                    80,
+		MoETopK:                                   4,
+		MoENumLayers:                              24,
+		MoERouter:                                 MoERouterSplit,
+		MoEExpertPopularityAlpha:                  0.8,
+		MoEHiddenSize:                             2048,
+		MoEIntermediateSize:                       1408,
+		MoEBytesPerElement:                        2,
+		MoEGPUFlops:                               312e12,
+		MoEGPUMemoryBandwidth:                     2.0e12,
+		MoEInterconnectBandwidth:                  400e9,
+		MoEInterconnectLatency:                    5 * time.Microsecond,
 		Rank:                                      -1,
 		DatasetTableName:                          DefaultDSTableName,
 		DefaultEmbeddingDimensions:                384,
@@ -614,6 +663,49 @@ func (c *Configuration) validate() error {
 
 	if c.DPSize < 1 || c.DPSize > 8 {
 		return errors.New("data parallel size must be between 1 and 8")
+	}
+
+	if c.EnableMoE {
+		if c.MoEExpertParallelSize < 1 {
+			return errors.New("moe expert parallel size must be at least 1")
+		}
+		if c.MoENumExperts < 1 {
+			return errors.New("moe number of experts must be at least 1")
+		}
+		if c.MoEPhysicalExpertSlots < c.MoENumExperts {
+			return errors.New("moe physical expert slots cannot be less than the number of logical experts")
+		}
+		if c.MoEPhysicalExpertSlots > c.MoENumExperts*c.MoEExpertParallelSize {
+			return errors.New("moe physical expert slots cannot exceed experts times expert parallel size")
+		}
+		if c.MoETopK < 1 || c.MoETopK > c.MoENumExperts {
+			return errors.New("moe top-k must be between 1 and the number of experts")
+		}
+		if c.MoENumLayers < 1 {
+			return errors.New("moe number of layers must be at least 1")
+		}
+		if c.MoERouter != MoERouterSplit && c.MoERouter != MoERouterConcentrate && c.MoERouter != MoERouterHeuristic {
+			return fmt.Errorf("unknown moe router %s, supported routers are: %s, %s, and %s",
+				c.MoERouter, MoERouterSplit, MoERouterConcentrate, MoERouterHeuristic)
+		}
+		if c.MoEExpertPopularityAlpha < 0 {
+			return errors.New("moe expert popularity alpha cannot be negative")
+		}
+		if c.MoEHiddenSize < 1 || c.MoEIntermediateSize < 1 {
+			return errors.New("moe hidden and intermediate sizes must be at least 1")
+		}
+		if c.MoEBytesPerElement < 1 {
+			return errors.New("moe bytes per element must be at least 1")
+		}
+		if c.MoEGPUFlops <= 0 || c.MoEGPUMemoryBandwidth <= 0 {
+			return errors.New("moe GPU FLOPS and memory bandwidth must be positive")
+		}
+		if c.MoEExpertParallelSize > 1 && c.MoEInterconnectBandwidth <= 0 {
+			return errors.New("moe interconnect bandwidth must be positive for expert parallel size greater than 1")
+		}
+		if c.MoEInterconnectLatency < 0 {
+			return errors.New("moe interconnect latency cannot be negative")
+		}
 	}
 
 	if c.Rank > 7 {

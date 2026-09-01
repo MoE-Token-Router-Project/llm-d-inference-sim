@@ -46,7 +46,7 @@ For a detailed explanation of how the simulator models inference time and what e
 - `inter-token-latency-std-dev`: standard deviation for time between generated tokens, optional, default is zero. Can't be more than 30% of `inter-token-latency`, will not cause the actual inter token latency to differ by more than 70% from `inter-token-latency`
 - `kv-cache-transfer-latency`: time for KV-cache "transfer" from a remote vLLM, optional, by default zero. Usually much shorter than `time-to-first-token`
 - `kv-cache-transfer-latency-std-dev`: standard deviation for time to "transfer" kv-cache from another vLLM instance in case P/D is activated, optional, default is zero. Can't be more than 30% of `kv-cache-transfer-latency`, will not cause the actual latency to differ by more than 70% from `kv-cache-transfer-latency`
-- `time-to-generate-image`: simulated time to generate an image in omni mode. When a chat completion request is going to emit an image chunk, the simulator sleeps for this duration before sending it. Optional, default is zero.
+- `time-to-generate-image`: simulated time to generate an image in omni mode. When a chat completion request is going to emit an image chunk, the simulator sleeps for this duration before sending the image. Optional, default is zero.
 - `time-to-generate-image-std-dev`: standard deviation for `time-to-generate-image`, optional, default is zero. Can't be more than 30% of `time-to-generate-image`, will not cause the actual image generation time to differ by more than 70% from `time-to-generate-image`.
 - `seed`: random seed for operations (if not set, current Unix time in nanoseconds is used)
 
@@ -95,6 +95,26 @@ For a detailed explanation of how the simulator models inference time and what e
 - `data-parallel-size`: number of ranks to run in Data Parallel deployment, from 1 to 8, default is 1. Ports are assigned sequentially: rank 0 uses the configured `port`, rank 1 uses `port+1`, etc. When `--zmq-endpoint` is also set, each rank's ZMQ endpoint port is offset by the same amount — rank 0 publishes to the configured endpoint, rank 1 to `endpoint_port+1`, etc. Each rank also embeds its index in the `data_parallel_rank` field of every published event batch.
 - `data-parallel-rank`: the rank of this instance, used only when running Data Parallel ranks as separate processes. If set, `data-parallel-size` is ignored and a single simulator starts with this rank index embedded in its ZMQ event batches.
 
+## MoE expert parallelism
+
+MoE simulation is disabled by default and is independent of data parallelism. Each data-parallel rank gets its own expert-parallel GPU group. See [MoE Expert-Parallel Routing Simulation](moe-routing.md) for the routing and latency model.
+
+- `enable-moe`: enable expert-parallel MoE latency simulation, default is false.
+- `moe-expert-parallel-size`: number of simulated GPUs hosting expert replicas, default is 8.
+- `moe-num-experts`: number of logical experts per MoE layer, default is 60.
+- `moe-physical-expert-slots`: total physical expert replicas across the expert-parallel GPUs, default is 80. Must be at least `moe-num-experts` and no more than `moe-num-experts * moe-expert-parallel-size`.
+- `moe-top-k`: number of logical experts selected per token, default is 4.
+- `moe-num-layers`: number of MoE layers included in the cost model, default is 24.
+- `moe-router`: expert replica routing policy. Supported values are `split`, `concentrate`, and `heuristic`; default is `split`.
+- `moe-expert-popularity-alpha`: power-law alpha for synthetic logical-expert popularity, default is 0.8. Zero is uniform.
+- `moe-hidden-size`: hidden dimension used by the expert cost model, default is 2048.
+- `moe-intermediate-size`: expert intermediate dimension, default is 1408.
+- `moe-bytes-per-element`: tensor element width in bytes, default is 2.
+- `moe-gpu-flops`: simulated peak GPU throughput in FLOP/s, default is `312e12`.
+- `moe-gpu-memory-bandwidth`: simulated GPU memory bandwidth in bytes/s, default is `2e12`.
+- `moe-interconnect-bandwidth`: per-GPU expert-parallel bandwidth in bytes/s, default is `400e9`.
+- `moe-interconnect-latency`: one-way latency for each simulated all-to-all phase, default is `5us`.
+
 ## Datasets
 - `dataset-path`: Optional local file path to the SQLite database file used for generating responses from a dataset.
   - If not set, hardcoded preset responses will be used.
@@ -119,8 +139,8 @@ For a detailed explanation of how the simulator models inference time and what e
 - `default-embedding-dimensions`: default size of embedding vectors returned by `/v1/embeddings` when the request does not specify a `dimensions` field, optional, defaults to 384.
 
 ## SSL
-- `ssl-certfile`: Path to SSL certificate file for HTTPS (optional)
-- `ssl-keyfile`: Path to SSL private key file for HTTPS (optional)
+- `ssl-certfile`: Path to the SSL certificate file for HTTPS (optional)
+- `ssl-keyfile`: Path to the SSL private key file for HTTPS (optional)
 - `self-signed-certs`: Enable automatic generation of self-signed certificates for HTTPS
 
 ## Fake metrics
