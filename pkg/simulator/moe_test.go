@@ -52,34 +52,95 @@ func activeExpertCopies(state *moeRoutingState) int {
 	return total
 }
 
-var _ = Describe("MoE expert-parallel simulation", func() {
-	It("allocates every physical expert slot with D'Hondt", func() {
-		probabilities := powerLawProbabilities(8, 0.8)
-		replicas := dhondtReplicaCounts(probabilities, 12)
-		total := 0
-		for _, count := range replicas {
-			Expect(count).To(BeNumerically(">=", 1))
-			total += count
+func countPlacementSlots(placement [][]int, numGPUs int) []int {
+	slots := make([]int, numGPUs)
+	for _, ranks := range placement {
+		for _, rank := range ranks {
+			slots[rank]++
 		}
-		Expect(total).To(Equal(12))
-		Expect(replicas[0]).To(BeNumerically(">=", replicas[len(replicas)-1]))
+	}
+	return slots
+}
+
+var _ = Describe("MoE expert-parallel simulation", func() {
+	It("matches vLLM's initial physical-to-logical placement", func() {
+		placement := vllmInitialPlacementOneLayer(8, 12, 4)
+		Expect(placement).To(Equal([][]int{
+			{0, 2},
+			{0, 3},
+			{0, 3},
+			{1, 3},
+			{1},
+			{1},
+			{2},
+			{2},
+		}))
+		Expect(countPlacementSlots(placement, 4)).To(Equal([]int{3, 3, 3, 3}))
 	})
 
-	It("places replicas on distinct GPUs for each expert", func() {
+	It("matches the reference D'Hondt allocation and placement", func() {
+		placement, replicas := dhondtPlaceOneLayer([]float64{100, 50, 25, 10}, 6, 2)
+		Expect(replicas).To(Equal([]int{2, 2, 1, 1}))
+		Expect(placement).To(Equal([][]int{
+			{0, 1},
+			{0, 1},
+			{0},
+			{1},
+		}))
+		Expect(countPlacementSlots(placement, 2)).To(Equal([]int{3, 3}))
+	})
+
+	It("caps D'Hondt replicas at one copy per GPU and fills every rank equally", func() {
 		probabilities := powerLawProbabilities(8, 0.8)
-		replicas := dhondtReplicaCounts(probabilities, 12)
-		placement := placeExpertReplicas(probabilities, replicas, 4, 0)
-		for expert, gpus := range placement {
-			Expect(gpus).To(HaveLen(replicas[expert]))
+		placement, replicas := dhondtPlaceOneLayer(probabilities, 12, 4)
+		total := 0
+		for expert, count := range replicas {
+			Expect(count).To(BeNumerically(">=", 1))
+			Expect(count).To(BeNumerically("<=", 4))
+			Expect(placement[expert]).To(HaveLen(count))
 			seen := make(map[int]struct{})
-			for _, gpu := range gpus {
-				Expect(gpu).To(BeNumerically(">=", 0))
-				Expect(gpu).To(BeNumerically("<", 4))
+			for _, gpu := range placement[expert] {
 				_, duplicate := seen[gpu]
 				Expect(duplicate).To(BeFalse())
 				seen[gpu] = struct{}{}
 			}
+			total += count
 		}
+		Expect(total).To(Equal(12))
+		Expect(countPlacementSlots(placement, 4)).To(Equal([]int{3, 3, 3, 3}))
+	})
+
+	It("starts from vLLM placement and replaces experts from observed load", func() {
+		model := newMoESimulator(testMoEConfig(common.MoERouterSplit))
+		initial := clonePlacement(model.placements[0])
+		Expect(model.expertRearrangementStep).To(Equal(
+			vllmEPLBStepInterval - vllmEPLBStepInterval/4,
+		))
+
+		// Put the model one step before rearrangement so this test exercises the
+		// same record -> increment -> rearrange ordering as vLLM without running
+		// thousands of forward passes.
+		model.expertRearrangementStep = vllmEPLBStepInterval - 1
+		latency := model.latencyForTokens(128)
+
+		Expect(latency).To(BeNumerically(">", 0))
+		Expect(model.placementGeneration).To(Equal(uint64(1)))
+		Expect(model.placements[0]).NotTo(Equal(initial))
+		Expect(model.lastReplacementMoves).To(BeNumerically(">", 0))
+		Expect(countPlacementSlots(model.placements[0], model.numGPUs)).To(
+			Equal([]int{3, 3, 3, 3}),
+		)
+	})
+
+	It("keeps cached latency separate across placement generations", func() {
+		model := newMoESimulator(testMoEConfig(common.MoERouterSplit))
+		model.expertRearrangementStep = vllmEPLBStepInterval - 1
+		_ = model.latencyForTokens(64)
+		Expect(model.placementGeneration).To(Equal(uint64(1)))
+		Expect(model.latencyCache).To(HaveLen(1))
+
+		_ = model.latencyForTokens(64)
+		Expect(model.latencyCache).To(HaveLen(2))
 	})
 
 	It("keeps split, concentrate, and heuristic replica usage distinct", func() {
