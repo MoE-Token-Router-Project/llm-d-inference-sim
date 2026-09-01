@@ -29,7 +29,9 @@ import (
 // Implementation of request for /chat/completions requests
 type ChatCompletionsRequest struct {
 	api.ChatCompletionsRequest
+	TracePromptID *int `json:"trace_prompt_id,omitempty"`
 	willSendImage bool
+	trace         *traceExecution
 }
 
 func (c *ChatCompletionsRequest) SetSendImage(v bool) { c.willSendImage = v }
@@ -79,15 +81,49 @@ func (c *ChatCompletionsRequest) validate(toolsValidator *toolsValidator) *api.E
 		}
 	}
 
+	if c.TracePromptID != nil {
+		if c.GetN() != 1 {
+			return newTraceRequestError("trace_prompt_id requires n=1")
+		}
+		if len(c.Tools) != 0 {
+			return newTraceRequestError("trace_prompt_id cannot be used with tools")
+		}
+		if c.IsDoRemotePrefill() || c.IsDoRemoteDecode() {
+			return newTraceRequestError("trace_prompt_id cannot be used with remote prefill or decode")
+		}
+		if c.GetIgnoreEOS() {
+			return newTraceRequestError("trace_prompt_id cannot be used with ignore_eos")
+		}
+		if c.Logprobs {
+			return newTraceRequestError("trace_prompt_id cannot be used with logprobs")
+		}
+		if hasNonTextContent(c.Messages) {
+			return newTraceRequestError("trace_prompt_id only supports text chat messages")
+		}
+	}
+
 	return validateRequest(c)
+}
+
+func hasNonTextContent(messages []api.Message) bool {
+	for _, message := range messages {
+		for _, block := range message.Content.Structured {
+			if block.Type != "text" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (c *ChatCompletionsRequest) buildRequestContext(simCtx *SimContext, channel common.Channel[*ResponseInfo],
 	choiceIdx int, doneFn func()) requestContext {
+	traceErr := simCtx.bindTraceChatRequest(c)
 	reqCtx := &chatCompletionReqCtx{
 		baseRequestContext: newBaseRequestContext(simCtx, channel, choiceIdx, doneFn),
 		req:                c,
 		toolIDPrefix:       common.ChatCmplToolIDPrefix,
+		traceErr:           traceErr,
 	}
 	// wire chatCompletionReqCtx into embedded requestContext interface
 	reqCtx.requestContext = reqCtx
@@ -152,10 +188,29 @@ type chatCompletionReqCtx struct {
 	baseRequestContext
 	req          *ChatCompletionsRequest
 	toolIDPrefix string
+	traceErr     *api.Error
 }
 
 func (c *chatCompletionReqCtx) request() Request {
 	return c.req
+}
+
+func (c *chatCompletionReqCtx) handleRequest() (ResponseContext, *api.Error) {
+	if c.traceErr != nil {
+		// processRequest always runs the common completion cleanup, which
+		// decrements the running-request metric. Balance that cleanup even
+		// though this trace request is rejected before base request handling.
+		common.WriteToChannel(c.sim.metrics.runReqChan, common.MetricInfo{Value: 1}, c.sim.logger)
+		return nil, c.traceErr
+	}
+	return c.baseRequestContext.handleRequest()
+}
+
+func (c *chatCompletionReqCtx) kvCacheOnRequestEnd() {
+	if c.traceErr != nil {
+		return
+	}
+	c.baseRequestContext.kvCacheOnRequestEnd()
 }
 
 func (c *chatCompletionReqCtx) encode() ([]uint32, []string, *api.RenderMMFeatures, error) {

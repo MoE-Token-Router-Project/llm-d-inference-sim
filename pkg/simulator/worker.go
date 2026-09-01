@@ -70,7 +70,11 @@ func (s *Simulator) processRequest(reqCtx requestContext) {
 		return
 	}
 
-	s.simulateResponseProcessing(respCtx)
+	if execution := traceExecutionForRequest(req); execution != nil {
+		s.simulateTraceResponseProcessing(respCtx, execution)
+	} else {
+		s.simulateResponseProcessing(respCtx)
+	}
 	s.Context.logger.V(logging.DEBUG).Info("Finished processing request", "id", req.GetRequestID())
 
 	common.WriteToChannel(s.Context.metrics.requestSuccessChan,
