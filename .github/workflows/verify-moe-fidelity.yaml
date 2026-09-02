@@ -17,12 +17,26 @@ jobs:
           go-version: "${{ env.GO_VERSION }}"
           cache-dependency-path: go.sum
       - name: Check formatting
+        id: formatting
+        continue-on-error: true
         run: |
           files=$(git diff --name-only origin/main...HEAD -- '*.go')
-          test -z "$(gofmt -l $files)"
+          bad=$(gofmt -l $files)
+          if [ -n "$bad" ]; then
+            for file in $bad; do
+              echo "::error file=$file::gofmt required"
+            done
+            exit 1
+          fi
       - name: Go vet
+        if: always()
         run: go vet ./pkg/simulator ./scripts/moe_trace_virtual_benchmark
       - name: Simulator tests
+        if: always()
         run: go test ./pkg/simulator
       - name: Virtual benchmark build
+        if: always()
         run: go test ./scripts/moe_trace_virtual_benchmark
+      - name: Fail if formatting failed
+        if: steps.formatting.outcome == 'failure'
+        run: exit 1
