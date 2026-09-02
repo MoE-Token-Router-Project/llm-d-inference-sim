@@ -108,6 +108,9 @@ func StartWithOptions(ctx context.Context, config *common.Configuration, logger 
 		if !config.EnableMoE {
 			return nil, errors.New("--moe-trace-path requires --enable-moe")
 		}
+		if config.MoEExpertParallelSize <= 0 {
+			return nil, errors.New("moe expert parallel size must be positive")
+		}
 		if config.MoEPhysicalExpertSlots%config.MoEExpertParallelSize != 0 {
 			return nil, fmt.Errorf("moe physical expert slots (%d) must be divisible by expert parallel size (%d)",
 				config.MoEPhysicalExpertSlots, config.MoEExpertParallelSize)
@@ -133,8 +136,14 @@ func StartWithOptions(ctx context.Context, config *common.Configuration, logger 
 		return sims, nil
 	}
 
+	cleanup := func() {
+		for _, sim := range sims {
+			sim.Stop()
+		}
+	}
 	for _, sim := range sims {
 		if err := configureTraceFidelity(sim.Context.moe, sim.Context.Config(), options.MoEFixedPlacementPath); err != nil {
+			cleanup()
 			return nil, fmt.Errorf("configure MoE trace fidelity: %w", err)
 		}
 		sim.Context.dataset = &traceAwareDataset{
