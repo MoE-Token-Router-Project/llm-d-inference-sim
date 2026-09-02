@@ -28,7 +28,7 @@ import (
 )
 
 type output struct {
-	GPU     string                          `json:"gpu"`
+	GPU     string                            `json:"gpu"`
 	Results []simulator.MoETraceVirtualResult `json:"results"`
 }
 
@@ -92,22 +92,22 @@ func main() {
 			continue
 		}
 		config := &common.Configuration{
-			Model:                       metadata.Model,
-			EnableMoE:                   true,
-			MoEExpertParallelSize:       epSize,
-			MoENumExperts:               metadata.NumExperts,
-			MoEPhysicalExpertSlots:      physicalSlots,
-			MoETopK:                     metadata.TopK,
-			MoENumLayers:                len(metadata.SparseLayers),
-			MoERouter:                   router,
-			MoEExpertPopularityAlpha:    0.8,
-			MoEHiddenSize:               hiddenSize,
-			MoEIntermediateSize:         intermediateSize,
-			MoEBytesPerElement:          bytesPerElement,
-			MoEGPUFlops:                 gpuFlops,
-			MoEGPUMemoryBandwidth:       gpuBandwidth,
-			MoEInterconnectBandwidth:    interconnectBandwidth,
-			MoEInterconnectLatency:      interconnectLatency,
+			Model:                    metadata.Model,
+			EnableMoE:                true,
+			MoEExpertParallelSize:    epSize,
+			MoENumExperts:            metadata.NumExperts,
+			MoEPhysicalExpertSlots:   physicalSlots,
+			MoETopK:                  metadata.TopK,
+			MoENumLayers:             len(metadata.SparseLayers),
+			MoERouter:                router,
+			MoEExpertPopularityAlpha: 0.8,
+			MoEHiddenSize:            hiddenSize,
+			MoEIntermediateSize:      intermediateSize,
+			MoEBytesPerElement:       bytesPerElement,
+			MoEGPUFlops:              gpuFlops,
+			MoEGPUMemoryBandwidth:    gpuBandwidth,
+			MoEInterconnectBandwidth: interconnectBandwidth,
+			MoEInterconnectLatency:   interconnectLatency,
 		}
 		result, err := simulator.RunMoETraceVirtualBenchmark(simulator.MoETraceVirtualOptions{
 			TracePath:          tracePath,
