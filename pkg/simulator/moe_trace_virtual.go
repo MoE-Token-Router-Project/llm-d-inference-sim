@@ -25,7 +25,8 @@ import (
 )
 
 const (
-	virtualPhasePrefill = iota
+	virtualPhaseWaiting = iota
+	virtualPhasePrefill
 	virtualPhaseDecode
 	virtualPhaseDone
 )
@@ -38,6 +39,7 @@ type MoETraceVirtualOptions struct {
 	FixedPlacementPath string
 	Config             *common.Configuration
 	TokenBudget        int
+	MaxNumSeqs         int
 }
 
 // MoETraceVirtualResult reports modeled time for the routed MoE stack.
@@ -66,9 +68,10 @@ type virtualTraceSequence struct {
 }
 
 // RunMoETraceVirtualBenchmark replays all prompts using vLLM-style chunked
-// serving: every active decode sequence contributes one token first, then the
-// remaining token budget is filled with prefill chunks. One aggregate
-// [layer][expert] workload is routed exactly once per model forward.
+// serving: admit at most MaxNumSeqs active sequences, let every active decode
+// sequence contribute one token first, then fill the remaining token budget
+// with prefill chunks. One aggregate [layer][expert] workload is routed exactly
+// once per model forward.
 func RunMoETraceVirtualBenchmark(options MoETraceVirtualOptions) (MoETraceVirtualResult, error) {
 	if options.Config == nil {
 		return MoETraceVirtualResult{}, errors.New("virtual MoE trace benchmark requires a configuration")
@@ -97,6 +100,14 @@ func RunMoETraceVirtualBenchmark(options MoETraceVirtualOptions) (MoETraceVirtua
 	if budget <= 0 {
 		budget = defaultTracePrefillBatchTokens
 	}
+	maxNumSeqs := options.MaxNumSeqs
+	if maxNumSeqs <= 0 {
+		maxNumSeqs = 32
+	}
+	if maxNumSeqs > budget {
+		return MoETraceVirtualResult{}, fmt.Errorf(
+			"max-num-seqs %d exceeds token budget %d; a decode-only forward could not fit", maxNumSeqs, budget)
+	}
 
 	sequences := make([]virtualTraceSequence, len(store.prompts))
 	result := MoETraceVirtualResult{
@@ -105,25 +116,18 @@ func RunMoETraceVirtualBenchmark(options MoETraceVirtualOptions) (MoETraceVirtua
 		Requests: len(sequences),
 	}
 	for index, prompt := range store.prompts {
-		sequence := virtualTraceSequence{prompt: prompt}
-		inputTokens := len(prompt.data.InputTokenIDs)
-		outputTokens := len(prompt.data.DecodeTokenIDs)
-		result.PromptTokens += inputTokens
-		result.OutputTokens += outputTokens
-		if inputTokens == 0 {
-			if outputTokens > 1 {
-				sequence.phase = virtualPhaseDecode
-			} else {
-				sequence.phase = virtualPhaseDone
-			}
-		} else {
-			sequence.phase = virtualPhasePrefill
+		sequences[index] = virtualTraceSequence{
+			prompt: prompt,
+			phase:  virtualPhaseWaiting,
 		}
-		sequences[index] = sequence
+		result.PromptTokens += len(prompt.data.InputTokenIDs)
+		result.OutputTokens += len(prompt.data.DecodeTokenIDs)
 	}
 
 	for hasVirtualWork(sequences) {
-		decodeIndices := make([]int, 0, len(sequences))
+		admitVirtualSequences(sequences, maxNumSeqs)
+
+		decodeIndices := make([]int, 0, maxNumSeqs)
 		for index := range sequences {
 			sequence := &sequences[index]
 			if sequence.phase != virtualPhaseDecode {
@@ -148,7 +152,7 @@ func RunMoETraceVirtualBenchmark(options MoETraceVirtualOptions) (MoETraceVirtua
 		}
 		remainingBudget := budget - len(decodeIndices)
 		prefillTokens := 0
-		prefillTouched := make([]int, 0, len(sequences))
+		prefillTouched := make([]int, 0, maxNumSeqs)
 		for index := range sequences {
 			if remainingBudget == 0 {
 				break
@@ -177,6 +181,13 @@ func RunMoETraceVirtualBenchmark(options MoETraceVirtualOptions) (MoETraceVirtua
 
 		forwardTokens := len(decodeIndices) + prefillTokens
 		if forwardTokens == 0 {
+			// Completing a zero-work sequence above may have freed a sequence slot.
+			// Admit again before declaring the scheduler stuck.
+			before := activeVirtualSequences(sequences)
+			admitVirtualSequences(sequences, maxNumSeqs)
+			if activeVirtualSequences(sequences) != before {
+				continue
+			}
 			return MoETraceVirtualResult{}, errors.New("virtual MoE trace scheduler made no progress")
 		}
 		modeled := model.traceModelLatencyForLayerCounts(counts)
@@ -247,6 +258,45 @@ func validateVirtualMoEConfig(config *common.Configuration) error {
 		return errors.New("interconnect bandwidth must be positive for multi-GPU EP")
 	}
 	return nil
+}
+
+func admitVirtualSequences(sequences []virtualTraceSequence, maxNumSeqs int) {
+	active := activeVirtualSequences(sequences)
+	if active >= maxNumSeqs {
+		return
+	}
+	for index := range sequences {
+		if active >= maxNumSeqs {
+			return
+		}
+		sequence := &sequences[index]
+		if sequence.phase != virtualPhaseWaiting {
+			continue
+		}
+		inputTokens := len(sequence.prompt.data.InputTokenIDs)
+		outputTokens := len(sequence.prompt.data.DecodeTokenIDs)
+		switch {
+		case inputTokens > 0:
+			sequence.phase = virtualPhasePrefill
+			active++
+		case outputTokens > 1:
+			sequence.phase = virtualPhaseDecode
+			active++
+		default:
+			sequence.phase = virtualPhaseDone
+		}
+	}
+}
+
+func activeVirtualSequences(sequences []virtualTraceSequence) int {
+	active := 0
+	for index := range sequences {
+		switch sequences[index].phase {
+		case virtualPhasePrefill, virtualPhaseDecode:
+			active++
+		}
+	}
+	return active
 }
 
 func hasVirtualWork(sequences []virtualTraceSequence) bool {
