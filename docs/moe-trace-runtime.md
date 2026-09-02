@@ -75,12 +75,13 @@ The HTTP path still performs the routing calculation on the host before it can e
 
 Use `scripts/moe_trace_virtual_benchmark` when comparing routing-policy performance with real GPU runs. It does not sleep or use HTTP wall time. It advances a pure modeled clock and implements one shared vLLM-style serving loop:
 
-1. admit no more than `max-num-seqs` active requests and leave later trace prompts queued;
-2. one token from every active decode sequence;
-3. remaining token budget filled by chunked prefill;
-4. one aggregate `[layer][expert]` workload per forward;
-5. one multi-GPU routing/cost calculation per forward;
-6. `N-1` decode forwards for `N` visible generated tokens.
+1. repeat the trace prompt set `--copies` times when the target run contains more requests than the trace;
+2. admit no more than `max-num-seqs` active requests and leave later requests queued;
+3. one token from every active decode sequence;
+4. remaining token budget filled by chunked prefill;
+5. one aggregate `[layer][expert]` workload per forward;
+6. one multi-GPU routing/cost calculation per forward;
+7. `N-1` decode forwards for `N` visible generated tokens.
 
 Example for the controlled A100 experiment:
 
@@ -90,10 +91,11 @@ go run ./scripts/moe_trace_virtual_benchmark \
   --fixed-placement /data/fixed_dhondt_placement.json \
   --gpu a100 \
   --token-budget 1024 \
-  --max-num-seqs 32
+  --max-num-seqs 32 \
+  --copies 1
 ```
 
-Both scheduler limits should match the real vLLM invocation. `max-num-seqs` must not exceed the token budget because a decode-only forward carries one token for every active sequence.
+Both scheduler limits and the request count should match the real vLLM invocation. `max-num-seqs` must not exceed the token budget because a decode-only forward carries one token for every active sequence. `--copies` repeats the complete prompt set through the scheduler; it does not simply multiply the final latency. Thus a 2,000-prompt trace can represent a 20,000-request run from the same prompt set with `--copies 10`.
 
 This is the preferred result for answering whether Split, Concentrate, and Heuristic have the same relative ordering as the real vLLM run. `scripts/moe_trace_all_prompts_benchmark` remains useful for HTTP/API and queueing behavior.
 
