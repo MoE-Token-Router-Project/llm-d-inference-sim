@@ -38,42 +38,49 @@ jobs:
         run: |
           go test ./scripts/moe_trace_virtual_benchmark
           go test ./scripts/moe_trace_all_prompts_benchmark
-      - name: Qwen-shaped fixed-placement smoke test
+      - name: Qwen-shaped fixed-placement mixed-batch smoke test
         run: |
           python3 - <<'PY'
           import heapq
           import json
 
           E, K, L, G, R = 60, 4, 24, 8, 80
-          P, D = 2, 3
+          prompt_lengths = [2, 1500]
+          decode_lengths = [3, 3]
           trace = []
-          for layer in range(L):
-              for pos in range(P):
-                  experts = [((layer * 7 + pos * 3 + j) % E) for j in range(K)]
-                  trace.append({
-                      "prompt": 0, "phase": "prefill", "position": pos,
-                      "token_id": 100 + pos, "token": "x", "layer": layer,
-                      "experts": experts, "gate_weights": [0.4, 0.3, 0.2, 0.1],
-                  })
-          for step in range(D):
+          prompts = []
+          for pidx, (P, D) in enumerate(zip(prompt_lengths, decode_lengths)):
+              prompts.append({
+                  "index": pidx,
+                  "prompt": f"fixture-{pidx}",
+                  "input_tokens": P,
+                  "decode_tokens": D,
+                  "generated_text": "abc",
+              })
               for layer in range(L):
-                  experts = [((layer * 11 + step * 5 + j) % E) for j in range(K)]
-                  trace.append({
-                      "prompt": 0, "phase": "decode", "position": P + step,
-                      "token_id": 200 + step, "token": "y", "layer": layer,
-                      "experts": experts, "gate_weights": [0.4, 0.3, 0.2, 0.1],
-                  })
+                  for pos in range(P):
+                      experts = [((pidx * 13 + layer * 7 + pos * 3 + j) % E) for j in range(K)]
+                      trace.append({
+                          "prompt": pidx, "phase": "prefill", "position": pos,
+                          "token_id": 10000 * (pidx + 1) + pos, "token": "x", "layer": layer,
+                          "experts": experts, "gate_weights": [0.4, 0.3, 0.2, 0.1],
+                      })
+              for step in range(D):
+                  for layer in range(L):
+                      experts = [((pidx * 17 + layer * 11 + step * 5 + j) % E) for j in range(K)]
+                      trace.append({
+                          "prompt": pidx, "phase": "decode", "position": P + step,
+                          "token_id": 50000 + 100 * pidx + step, "token": "y", "layer": layer,
+                          "experts": experts, "gate_weights": [0.4, 0.3, 0.2, 0.1],
+                      })
           source = {
               "model": "Qwen/Qwen1.5-MoE-A2.7B",
               "num_experts": E,
               "top_k": K,
               "sparse_layers": list(range(L)),
               "num_sparse_layers": L,
-              "num_prompts": 1,
-              "prompts": [{
-                  "index": 0, "prompt": "fixture", "input_tokens": P,
-                  "decode_tokens": D, "generated_text": "abc",
-              }],
+              "num_prompts": len(prompts),
+              "prompts": prompts,
               "trace": trace,
           }
           with open("/tmp/qwen_fixture.json", "w") as f:
@@ -120,4 +127,19 @@ jobs:
             --trace /tmp/qwen_fixture.moetrace \
             --fixed-placement /tmp/fixed_placement.json \
             --gpu a100 \
-            --token-budget 1024
+            --token-budget 1024 \
+            --max-num-seqs 2 \
+            --json > /tmp/result.json
+          cat /tmp/result.json
+          python3 - <<'PY'
+          import json
+          data = json.load(open("/tmp/result.json"))
+          assert data["gpu"] == "a100"
+          assert len(data["results"]) == 3
+          for result in data["results"]:
+              assert result["Requests"] == 2
+              assert result["DecodeForwards"] == 4
+              assert result["MixedSteps"] > 0
+              assert result["ModeledTime"] > 0
+              assert result["OutputTokensPerSecond"] > 0
+          PY
