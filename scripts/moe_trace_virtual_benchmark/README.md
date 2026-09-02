@@ -4,15 +4,16 @@ Use this benchmark for routing-policy cross-validation against the real multi-GP
 
 The serving loop follows vLLM-style continuous batching while preserving the trace generator's decode semantics:
 
-1. Admit no more than `--max-num-seqs` active sequences; later prompts remain queued in trace order.
-2. Every active decode sequence contributes one token to the next forward.
-3. The remaining `--token-budget` is filled with stable-order prefill chunks.
-4. The exact recorded logical expert routes are aggregated into one `[layer][expert]` workload.
-5. Split, Concentrate, or Heuristic maps those assignments to the configured physical replicas.
-6. All EP GPUs execute one shared forward and advance together.
-7. For `N` visible output tokens, only `N-1` decode forwards are charged because the first output is produced by prefill.
+1. Repeat the complete trace set `--copies` times in stable order when the target serving run has more requests than the trace contains.
+2. Admit no more than `--max-num-seqs` active sequences; later prompts remain queued in trace order.
+3. Every active decode sequence contributes one token to the next forward.
+4. The remaining `--token-budget` is filled with stable-order prefill chunks.
+5. The exact recorded logical expert routes are aggregated into one `[layer][expert]` workload.
+6. Split, Concentrate, or Heuristic maps those assignments to the configured physical replicas.
+7. All EP GPUs execute one shared forward and advance together.
+8. For `N` visible output tokens, only `N-1` decode forwards are charged because the first output is produced by prefill.
 
-For the controlled experiment in `moe_all_files`, pass the same frozen D'Hondt placement and concurrency used by real vLLM:
+For the controlled experiment in `moe_all_files`, pass the same frozen D'Hondt placement and scheduler limits used by real vLLM:
 
 ```bash
 go run ./scripts/moe_trace_virtual_benchmark \
@@ -20,10 +21,13 @@ go run ./scripts/moe_trace_virtual_benchmark \
   --fixed-placement /path/to/fixed_dhondt_placement.json \
   --gpu a100 \
   --token-budget 1024 \
-  --max-num-seqs 32
+  --max-num-seqs 32 \
+  --copies 1
 ```
 
-The default Qwen1.5 settings are EP=8, 80 physical slots, hidden size 2048, routed intermediate size 1408, BF16, a 1024-token forward budget, `max-num-seqs=32`, and a 400 GB/s interconnect with 5 us one-way phase latency. `--gpu a100` selects 312 TFLOP/s and 2.0 TB/s; `--gpu h100` selects 990 TFLOP/s and 3.35 TB/s. The trace fidelity layer then applies the same achieved-efficiency, 128-row GEMM padding, launch-overhead, and Qwen shared-expert model documented in `docs/moe-trace-runtime.md`.
+`--copies` repeats the whole prompt set, like `N_P` in `moe_all_files/serve_models.py`. For example, if the trace contains 2,000 InstructCoder prompts and the real benchmark served 20,000 requests from that same prompt set, use `--copies 10`. Prompt tokens, output tokens, decode forwards, queueing, and modeled serving time all scale through the actual repeated scheduler execution rather than by multiplying the final answer.
+
+The default Qwen1.5 settings are EP=8, 80 physical slots, hidden size 2048, routed intermediate size 1408, BF16, a 1024-token forward budget, `max-num-seqs=32`, one trace-set copy, and a 400 GB/s interconnect with 5 us one-way phase latency. `--gpu a100` selects 312 TFLOP/s and 2.0 TB/s; `--gpu h100` selects 990 TFLOP/s and 3.35 TB/s. The trace fidelity layer then applies the same achieved-efficiency, 128-row GEMM padding, launch-overhead, and Qwen shared-expert model documented in `docs/moe-trace-runtime.md`.
 
 `--max-num-seqs` must not exceed `--token-budget`, because a decode-only forward contains one token for every active sequence. Change both values when reproducing a real run that used different scheduler limits.
 
