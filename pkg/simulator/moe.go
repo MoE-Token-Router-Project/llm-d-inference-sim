@@ -341,11 +341,13 @@ func (m *moeSimulator) routeConcentrate(counts []float64, placement [][]int) *mo
 		bestGPU := -1
 		bestCost := math.Inf(1)
 		for _, gpu := range placement[expert] {
-			candidate := state.clone()
-			candidate.active[gpu][expert] = struct{}{}
-			candidate.loads[gpu] += count
-			cost := m.maxGPUCost(candidate)
-			if cost < bestCost || (cost == bestCost && (bestGPU < 0 || gpu < bestGPU)) {
+			activeExperts := len(state.active[gpu])
+			if _, active := state.active[gpu][expert]; !active {
+				activeExperts++
+			}
+			cost := m.gpuCost(activeExperts, state.loads[gpu]+count)
+			// Preserve the placement order on ties, matching Python's stable min.
+			if cost < bestCost {
 				bestGPU = gpu
 				bestCost = cost
 			}
@@ -356,94 +358,152 @@ func (m *moeSimulator) routeConcentrate(counts []float64, placement [][]int) *mo
 	return state
 }
 
-func (m *moeSimulator) routeHeuristic(counts []float64, placement [][]int) *moeRoutingState {
-	state := newMoERoutingState(m.numGPUs)
-	chosen := make(map[int][]int)
-	weightSeconds := m.expertWeightBytes / m.gpuBandwidth
-	computeSeconds := m.flopsPerAssignment / m.gpuFlops
+func (m *moeSimulator) heuristicExpertOrder(counts []float64) []int {
+	order := make([]int, 0, len(counts))
+	for expert, count := range counts {
+		if count > 0 {
+			order = append(order, expert)
+		}
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		left := order[i]
+		right := order[j]
+		leftSolo := m.gpuCost(1, counts[left])
+		rightSolo := m.gpuCost(1, counts[right])
+		if leftSolo == rightSolo {
+			return left < right
+		}
+		return leftSolo > rightSolo
+	})
+	return order
+}
 
-	for _, expert := range expertOrder(counts) {
-		count := counts[expert]
-		if count <= 0 {
-			continue
-		}
-		replicaCount := int(math.Ceil(count * computeSeconds / weightSeconds))
-		if replicaCount < 1 {
-			replicaCount = 1
-		}
-		if replicaCount > len(placement[expert]) {
-			replicaCount = len(placement[expert])
-		}
-		share := count / float64(replicaCount)
-		selected := make([]int, 0, replicaCount)
-		for range replicaCount {
-			bestGPU := -1
-			bestCost := math.Inf(1)
-			for _, gpu := range placement[expert] {
-				if containsGPU(selected, gpu) {
-					continue
-				}
-				candidate := state.clone()
-				candidate.active[gpu][expert] = struct{}{}
-				candidate.loads[gpu] += share
-				cost := m.maxGPUCost(candidate)
-				if cost < bestCost || (cost == bestCost && (bestGPU < 0 || gpu < bestGPU)) {
-					bestGPU = gpu
-					bestCost = cost
-				}
-			}
-			selected = append(selected, bestGPU)
-			state.active[bestGPU][expert] = struct{}{}
-			state.loads[bestGPU] += share
-		}
-		chosen[expert] = selected
+func (m *moeSimulator) heuristicReplicaCount(count float64, availableReplicas int) int {
+	weightSeconds := m.expertWeightBytes / m.gpuBandwidth
+	computeSeconds := count * m.flopsPerAssignment / m.gpuFlops
+	if computeSeconds <= weightSeconds {
+		return 1
 	}
 
+	// Python's round() uses ties-to-even. The canonical r_heur implementation
+	// uses round(ce / w), so use RoundToEven rather than math.Round/ceil.
+	replicas := int(math.RoundToEven(computeSeconds / weightSeconds))
+	if replicas < 1 {
+		replicas = 1
+	}
+	if replicas > availableReplicas {
+		replicas = availableReplicas
+	}
+	return replicas
+}
+
+func (m *moeSimulator) routeHeuristic(counts []float64, placement [][]int) *moeRoutingState {
+	state := newMoERoutingState(m.numGPUs)
+	// chunks[expert][gpu] is y_(e,g) in serve_models.py::r_heur.
+	chunks := make(map[int]map[int]float64)
+	order := m.heuristicExpertOrder(counts)
+
+	// Initial adaptive split and least-loaded placement.
+	for _, expert := range order {
+		count := counts[expert]
+		replicaCount := m.heuristicReplicaCount(count, len(placement[expert]))
+		candidates := append([]int(nil), placement[expert]...)
+		sort.SliceStable(candidates, func(i, j int) bool {
+			left := candidates[i]
+			right := candidates[j]
+			return m.gpuCost(len(state.active[left]), state.loads[left]) <
+				m.gpuCost(len(state.active[right]), state.loads[right])
+		})
+
+		share := count / float64(replicaCount)
+		chunks[expert] = make(map[int]float64, replicaCount)
+		for _, gpu := range candidates[:replicaCount] {
+			chunks[expert][gpu] += share
+			state.active[gpu][expert] = struct{}{}
+			state.loads[gpu] += share
+		}
+	}
+
+	// Canonical r_heur local search: repeatedly inspect the current bottleneck
+	// GPU and apply the single whole-chunk move with the largest makespan gain.
 	for range 20 {
-		before := m.maxGPUCost(state)
 		slowGPU := 0
-		slowCost := -1.0
-		for gpu := range m.numGPUs {
+		base := m.gpuCost(len(state.active[0]), state.loads[0])
+		for gpu := 1; gpu < m.numGPUs; gpu++ {
 			cost := m.gpuCost(len(state.active[gpu]), state.loads[gpu])
-			if cost > slowCost {
+			if cost > base {
 				slowGPU = gpu
-				slowCost = cost
+				base = cost
 			}
 		}
-		improved := false
-		activeExperts := make([]int, 0, len(state.active[slowGPU]))
-		for expert := range state.active[slowGPU] {
-			activeExperts = append(activeExperts, expert)
-		}
-		sort.Ints(activeExperts)
-		for _, expert := range activeExperts {
-			selected := chosen[expert]
-			if len(selected) != 1 || selected[0] != slowGPU {
+
+		bestGain := 1e-12
+		bestExpert := -1
+		bestDestination := -1
+		bestTokens := 0.0
+		bestDestinationHadExpert := false
+
+		for _, expert := range order {
+			expertChunks := chunks[expert]
+			tokens, present := expertChunks[slowGPU]
+			if !present || tokens <= 0 {
 				continue
 			}
+
 			for _, destination := range placement[expert] {
 				if destination == slowGPU {
 					continue
 				}
-				candidate := state.clone()
-				delete(candidate.active[slowGPU], expert)
-				candidate.loads[slowGPU] -= counts[expert]
-				candidate.active[destination][expert] = struct{}{}
-				candidate.loads[destination] += counts[expert]
-				if m.maxGPUCost(candidate)+1e-15 < before {
-					state = candidate
-					chosen[expert] = []int{destination}
-					improved = true
-					break
+				_, destinationHadExpert := expertChunks[destination]
+
+				sourceActive := len(state.active[slowGPU]) - 1
+				sourceLoad := state.loads[slowGPU] - tokens
+				sourceCost := m.gpuCost(sourceActive, sourceLoad)
+
+				destinationActive := len(state.active[destination])
+				if !destinationHadExpert {
+					destinationActive++
+				}
+				destinationCost := m.gpuCost(destinationActive, state.loads[destination]+tokens)
+
+				otherCost := 0.0
+				for gpu := 0; gpu < m.numGPUs; gpu++ {
+					if gpu == slowGPU || gpu == destination {
+						continue
+					}
+					cost := m.gpuCost(len(state.active[gpu]), state.loads[gpu])
+					if cost > otherCost {
+						otherCost = cost
+					}
+				}
+
+				after := math.Max(sourceCost, math.Max(destinationCost, otherCost))
+				gain := base - after
+				// Strict comparison preserves the first move encountered on a tie,
+				// matching the canonical Python implementation.
+				if gain > bestGain {
+					bestGain = gain
+					bestExpert = expert
+					bestDestination = destination
+					bestTokens = tokens
+					bestDestinationHadExpert = destinationHadExpert
 				}
 			}
-			if improved {
-				break
-			}
 		}
-		if !improved {
+
+		if bestExpert < 0 {
 			break
 		}
+
+		delete(chunks[bestExpert], slowGPU)
+		delete(state.active[slowGPU], bestExpert)
+		state.loads[slowGPU] -= bestTokens
+
+		chunks[bestExpert][bestDestination] += bestTokens
+		if !bestDestinationHadExpert {
+			state.active[bestDestination][bestExpert] = struct{}{}
+		}
+		state.loads[bestDestination] += bestTokens
 	}
 	return state
 }
