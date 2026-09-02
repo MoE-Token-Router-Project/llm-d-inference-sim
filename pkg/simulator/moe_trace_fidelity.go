@@ -89,8 +89,8 @@ var (
 
 func configureTraceFidelity(m *moeSimulator, config *common.Configuration, fixedPlacementPath string) error {
 	options := &traceFidelityConfig{
-		memoryEfficiency:  1,
-		computeEfficiency: 1,
+		memoryEfficiency:   1,
+		computeEfficiency:  1,
 		prefillBatchTokens: defaultTracePrefillBatchTokens,
 		prefillCoalesce:    defaultTracePrefillCoalesce,
 	}
