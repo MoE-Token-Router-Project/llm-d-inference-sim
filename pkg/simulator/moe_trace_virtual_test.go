@@ -24,6 +24,7 @@ func TestVirtualTraceSchedulerChargesNMinusOneDecodeForwards(t *testing.T) {
 		TracePath:   path,
 		Config:      config,
 		TokenBudget: 1024,
+		MaxNumSeqs:  32,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -42,20 +43,31 @@ func TestVirtualTraceSchedulerChargesNMinusOneDecodeForwards(t *testing.T) {
 	}
 }
 
-func TestVirtualTraceSchedulerRejectsDecodeBatchLargerThanBudget(t *testing.T) {
+func TestVirtualTraceSchedulerSupportsOneSequencePerForwardBudget(t *testing.T) {
 	path, config := writeTinyMoETrace(t)
-	// One traced request never exceeds a budget of one decode token. This test
-	// mainly guards the option validation and ensures the smallest valid budget
-	// remains usable.
 	result, err := RunMoETraceVirtualBenchmark(MoETraceVirtualOptions{
 		TracePath:   path,
 		Config:      config,
 		TokenBudget: 1,
+		MaxNumSeqs:  1,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.DecodeForwards != 2 {
 		t.Fatalf("decode forwards=%d, want 2", result.DecodeForwards)
+	}
+}
+
+func TestVirtualTraceSchedulerRejectsSequenceLimitAboveTokenBudget(t *testing.T) {
+	path, config := writeTinyMoETrace(t)
+	_, err := RunMoETraceVirtualBenchmark(MoETraceVirtualOptions{
+		TracePath:   path,
+		Config:      config,
+		TokenBudget: 1,
+		MaxNumSeqs:  2,
+	})
+	if err == nil {
+		t.Fatal("expected max-num-seqs > token budget to fail")
 	}
 }
