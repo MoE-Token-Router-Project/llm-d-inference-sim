@@ -59,6 +59,26 @@ func TestVirtualTraceSchedulerSupportsOneSequencePerForwardBudget(t *testing.T) 
 	}
 }
 
+func TestVirtualTraceSchedulerRepeatsCompleteTraceSet(t *testing.T) {
+	path, config := writeTinyMoETrace(t)
+	result, err := RunMoETraceVirtualBenchmark(MoETraceVirtualOptions{
+		TracePath:   path,
+		Config:      config,
+		TokenBudget: 1024,
+		MaxNumSeqs:  2,
+		Copies:      2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Requests != 2 || result.PromptTokens != 4 || result.OutputTokens != 6 {
+		t.Fatalf("unexpected repeated workload totals: %+v", result)
+	}
+	if result.DecodeForwards != 4 {
+		t.Fatalf("decode forwards=%d, want 4 for two copies", result.DecodeForwards)
+	}
+}
+
 func TestVirtualTraceSchedulerRejectsSequenceLimitAboveTokenBudget(t *testing.T) {
 	path, config := writeTinyMoETrace(t)
 	_, err := RunMoETraceVirtualBenchmark(MoETraceVirtualOptions{
