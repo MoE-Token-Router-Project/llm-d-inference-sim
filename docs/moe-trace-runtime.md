@@ -22,6 +22,55 @@ Pass the trace file with the startup-only `--moe-trace-path` option together wit
 
 Startup fails if the trace model, logical expert count, top-k, or number of sparse layers does not match the simulator configuration. The physical expert slot count must also be divisible by the expert-parallel size.
 
+## Controlled fixed-placement comparison
+
+The real vLLM routing experiments can freeze the D'Hondt placement so every routing policy sees exactly the same physical replicas. Use the same JSON mapping with:
+
+```bash
+--moe-fixed-placement-path /data/fixed_dhondt_placement.json
+```
+
+This option requires `--moe-trace-path`. The file uses the same `physical_to_logical` format as `VLLM_FIXED_EXPERT_PLACEMENT` in the patched vLLM runtime. The simulator validates the layer count, physical slot count, logical expert IDs, one-copy-per-GPU invariant, and replica order before accepting requests.
+
+When a fixed placement is installed, trace replay does not run online EPLB or charge expert migration. Split, Concentrate, and Heuristic therefore differ only in physical-replica routing, matching the controlled real-GPU experiment.
+
+## Replica-routing fidelity
+
+Trace replay uses integer token assignments rather than the fractional synthetic approximation.
+
+- Split follows the real `base_router.py` round-robin mapping. If an expert has two assignments and four replicas, only the first two replicas are activated.
+- Concentrate processes experts hottest-first and selects the eligible GPU with the lowest projected local routed-expert cost.
+- Heuristic uses Python round-to-even for replica count, stable least-loaded replica selection, integral token chunks, and the same 20-iteration whole-chunk local search as the patched vLLM router.
+
+The physical replica order is preserved from the fixed `physical_to_logical` mapping because Split and tie cases depend on that order.
+
+## Hardware fidelity
+
+For `Qwen/Qwen1.5-MoE-A2.7B`, trace replay includes the always-on shared expert with intermediate dimension 5632 even though the trace records routed experts only.
+
+Known A100 and H100 peak configurations automatically use the hardware calibration from `moe_all_files/serve_models.py::layer_ms_hw`:
+
+| GPU profile | HBM efficiency | Compute efficiency | GEMM row block | Layer launch |
+| --- | ---: | ---: | ---: | ---: |
+| A100, 312 TFLOP/s and 2.0 TB/s | 0.75 | 0.70 | 128 | 9 us |
+| H100, 990 TFLOP/s and 3.35 TB/s | 0.80 | 0.80 | 128 | 6 us |
+
+Unknown hardware retains the ideal roofline. The calibration can be overridden at startup with environment variables:
+
+- `LLMD_MOE_SHARED_INTERMEDIATE_SIZE`
+- `LLMD_MOE_MEMORY_EFFICIENCY`
+- `LLMD_MOE_COMPUTE_EFFICIENCY`
+- `LLMD_MOE_GEMM_BLOCK_ROWS`
+- `LLMD_MOE_KERNEL_LAUNCH_OVERHEAD`
+- `LLMD_MOE_TRACE_PREFILL_BATCH_TOKENS`
+- `LLMD_MOE_TRACE_PREFILL_COALESCE`
+
+The default trace prefill token budget is 1024. Concurrent trace prefills are coalesced and chunked into shared forwards. Active decode requests already share one forward per decode generation. All trace MoE forwards reserve one serialized virtual GPU timeline, so Go router calculation time and goroutine overlap do not create artificial GPU throughput.
+
+The v1 trace does not record the EP source rank of each hidden state. Communication therefore assumes source tokens are balanced across EP ranks and uses the policy-dependent destination load to model the all-to-all bottleneck. Exact source-to-destination traffic requires a future trace format that records source-rank ownership.
+
+Prefill and decode use the same serialized model timeline, but they are not fused into a single mixed prefill-plus-decode forward. This remains a scheduling approximation relative to vLLM chunked prefill; unlike the previous worker-local model, the two phases can no longer execute overlapping virtual GPU forwards.
+
 ## Replay a traced prompt
 
 Add `trace_prompt_id` to a chat-completions request:
@@ -30,7 +79,7 @@ Add `trace_prompt_id` to a chat-completions request:
 {
   "model": "Qwen/Qwen1.5-MoE-A2.7B",
   "messages": [
-    {"role": "user", "content": "ignored during trace replay"}
+    {"role":"user","content":"ignored during trace replay"}
   ],
   "trace_prompt_id": 17
 }
@@ -50,14 +99,10 @@ The behavior is selected per request:
 | --- | --- | --- |
 | No | No | Existing simulator behavior |
 | Yes | No | Existing synthetic MoE behavior |
-| Yes | Yes | Trace replay |
+| Yes | Yes | Trace fidelity replay |
 | No | Yes | Request rejected |
 
-Trace replay reuses the existing physical expert placement, split/concentrate/heuristic replica routing, GPU cost model, communication model, D'Hondt EPLB policy, load-window timing, and migration model. Only the source of logical expert demand changes from the synthetic power-law distribution to the recorded per-layer routes.
-
-For partially cached prompts, trace replay aggregates only the uncached prefill positions. During decode, concurrently active trace requests contribute their recorded current-token routes. Other running requests continue to contribute the existing synthetic load approximation.
-
-The request scheduler is unchanged. Trace replay improves the expert-load input but does not turn the simulator into a cycle-accurate vLLM continuous-batching scheduler.
+Trace fidelity is intentionally isolated from the legacy synthetic workload. Requests without `trace_prompt_id` retain the previous synthetic power-law routing and latency behavior.
 
 ## Initial restrictions
 
