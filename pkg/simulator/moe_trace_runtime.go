@@ -465,10 +465,7 @@ func (s *Simulator) simulateTraceResponseProcessing(respCtx ResponseContext, exe
 
 	nTokens := 0
 	startDecode := time.Now()
-	if respIsEmpty(respCtx) {
-		common.WriteToChannel(reqCtx.responseChannel(),
-			&ResponseInfo{RespCtx: respCtx, ChoiceIdx: choiceIdx}, s.Context.logger)
-	} else {
+	if !respIsEmpty(respCtx) {
 		for i, token := range respCtx.responseTokens().Tokens {
 			if i != 0 {
 				s.Context.simulateTraceInterTokenLatency(requestID)
