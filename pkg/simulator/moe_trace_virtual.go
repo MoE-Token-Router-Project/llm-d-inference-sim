@@ -40,6 +40,7 @@ type MoETraceVirtualOptions struct {
 	Config             *common.Configuration
 	TokenBudget        int
 	MaxNumSeqs         int
+	Copies             int
 }
 
 // MoETraceVirtualResult reports modeled time for the routed MoE stack.
@@ -71,7 +72,8 @@ type virtualTraceSequence struct {
 // serving: admit at most MaxNumSeqs active sequences, let every active decode
 // sequence contribute one token first, then fill the remaining token budget
 // with prefill chunks. One aggregate [layer][expert] workload is routed exactly
-// once per model forward.
+// once per model forward. Copies repeats the complete trace prompt set in
+// stable order so a smaller trace can reproduce a larger serving run.
 func RunMoETraceVirtualBenchmark(options MoETraceVirtualOptions) (MoETraceVirtualResult, error) {
 	if options.Config == nil {
 		return MoETraceVirtualResult{}, errors.New("virtual MoE trace benchmark requires a configuration")
@@ -108,21 +110,27 @@ func RunMoETraceVirtualBenchmark(options MoETraceVirtualOptions) (MoETraceVirtua
 		return MoETraceVirtualResult{}, fmt.Errorf(
 			"max-num-seqs %d exceeds token budget %d; a decode-only forward could not fit", maxNumSeqs, budget)
 	}
+	copies := options.Copies
+	if copies <= 0 {
+		copies = 1
+	}
 
-	sequences := make([]virtualTraceSequence, len(store.prompts))
+	sequences := make([]virtualTraceSequence, 0, len(store.prompts)*copies)
 	result := MoETraceVirtualResult{
-		Model:    store.model,
-		Router:   config.MoERouter,
-		Requests: len(sequences),
+		Model:  store.model,
+		Router: config.MoERouter,
 	}
-	for index, prompt := range store.prompts {
-		sequences[index] = virtualTraceSequence{
-			prompt: prompt,
-			phase:  virtualPhaseWaiting,
+	for copyIndex := 0; copyIndex < copies; copyIndex++ {
+		for _, prompt := range store.prompts {
+			sequences = append(sequences, virtualTraceSequence{
+				prompt: prompt,
+				phase:  virtualPhaseWaiting,
+			})
+			result.PromptTokens += len(prompt.data.InputTokenIDs)
+			result.OutputTokens += len(prompt.data.DecodeTokenIDs)
 		}
-		result.PromptTokens += len(prompt.data.InputTokenIDs)
-		result.OutputTokens += len(prompt.data.DecodeTokenIDs)
 	}
+	result.Requests = len(sequences)
 
 	for hasVirtualWork(sequences) {
 		admitVirtualSequences(sequences, maxNumSeqs)
