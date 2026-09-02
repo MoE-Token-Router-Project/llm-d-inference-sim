@@ -65,11 +65,33 @@ Unknown hardware retains the ideal roofline. The calibration can be overridden a
 - `LLMD_MOE_TRACE_PREFILL_BATCH_TOKENS`
 - `LLMD_MOE_TRACE_PREFILL_COALESCE`
 
-The default trace prefill token budget is 1024. Concurrent trace prefills are coalesced and chunked into shared forwards. Active decode requests already share one forward per decode generation. All trace MoE forwards reserve one serialized virtual GPU timeline, so Go router calculation time and goroutine overlap do not create artificial GPU throughput.
+The default trace prefill token budget is 1024. Concurrent trace prefills are coalesced and chunked into shared forwards. Active decode requests share one forward per decode generation. All trace MoE forwards reserve one serialized virtual GPU timeline, so two independent HTTP workers cannot make the same simulated eight-GPU model execute overlapping forwards.
 
 The v1 trace does not record the EP source rank of each hidden state. Communication therefore assumes source tokens are balanced across EP ranks and uses the policy-dependent destination load to model the all-to-all bottleneck. Exact source-to-destination traffic requires a future trace format that records source-rank ownership.
 
-Prefill and decode use the same serialized model timeline, but they are not fused into a single mixed prefill-plus-decode forward. This remains a scheduling approximation relative to vLLM chunked prefill; unlike the previous worker-local model, the two phases can no longer execute overlapping virtual GPU forwards.
+The HTTP path still performs the routing calculation on the host before it can emit a token. Its Prometheus modeled TTFT/TPOT values use modeled duration, but client wall-clock latency can be larger when the Go calculation itself is slower than the simulated GPU. Prefill and decode also share the same serialized model timeline but are not fused into one mixed prefill-plus-decode HTTP forward. These are simulator-runtime effects, not GPU-model effects.
+
+## Virtual cross-validation benchmark
+
+Use `scripts/moe_trace_virtual_benchmark` when comparing routing-policy performance with real GPU runs. It does not sleep or use HTTP wall time. It advances a pure modeled clock and implements one shared vLLM-style serving loop:
+
+1. one token from every active decode sequence;
+2. remaining token budget filled by chunked prefill;
+3. one aggregate `[layer][expert]` workload per forward;
+4. one multi-GPU routing/cost calculation per forward;
+5. `N-1` decode forwards for `N` visible generated tokens.
+
+Example for the controlled A100 experiment:
+
+```bash
+go run ./scripts/moe_trace_virtual_benchmark \
+  --trace /data/instructcoder_2000_both.moetrace \
+  --fixed-placement /data/fixed_dhondt_placement.json \
+  --gpu a100 \
+  --token-budget 1024
+```
+
+This is the preferred result for answering whether Split, Concentrate, and Heuristic have the same relative ordering as the real vLLM run. `scripts/moe_trace_all_prompts_benchmark` remains useful for HTTP/API and queueing behavior.
 
 ## Replay a traced prompt
 
