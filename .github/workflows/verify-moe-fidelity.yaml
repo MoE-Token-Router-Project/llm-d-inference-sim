@@ -38,13 +38,86 @@ jobs:
         run: |
           go test ./scripts/moe_trace_virtual_benchmark
           go test ./scripts/moe_trace_all_prompts_benchmark
-      - name: Real Qwen trace and fixed-placement smoke test
+      - name: Qwen-shaped fixed-placement smoke test
         run: |
-          curl -fsSL https://raw.githubusercontent.com/MoE-Token-Router-Project/moe_all_files/main/qwen_trace_prompt128.json -o /tmp/qwen_trace_prompt128.json
-          curl -fsSL https://raw.githubusercontent.com/MoE-Token-Router-Project/moe_all_files/main/artifacts/fixed_dhondt_placement.json -o /tmp/fixed_dhondt_placement.json
-          go run ./cmd/moe-trace-tool convert --input /tmp/qwen_trace_prompt128.json --output /tmp/qwen_trace_prompt128.moetrace
+          python3 - <<'PY'
+          import heapq
+          import json
+
+          E, K, L, G, R = 60, 4, 24, 8, 80
+          P, D = 2, 3
+          trace = []
+          for layer in range(L):
+              for pos in range(P):
+                  experts = [((layer * 7 + pos * 3 + j) % E) for j in range(K)]
+                  trace.append({
+                      "prompt": 0, "phase": "prefill", "position": pos,
+                      "token_id": 100 + pos, "token": "x", "layer": layer,
+                      "experts": experts, "gate_weights": [0.4, 0.3, 0.2, 0.1],
+                  })
+          for step in range(D):
+              for layer in range(L):
+                  experts = [((layer * 11 + step * 5 + j) % E) for j in range(K)]
+                  trace.append({
+                      "prompt": 0, "phase": "decode", "position": P + step,
+                      "token_id": 200 + step, "token": "y", "layer": layer,
+                      "experts": experts, "gate_weights": [0.4, 0.3, 0.2, 0.1],
+                  })
+          source = {
+              "model": "Qwen/Qwen1.5-MoE-A2.7B",
+              "num_experts": E,
+              "top_k": K,
+              "sparse_layers": list(range(L)),
+              "num_sparse_layers": L,
+              "num_prompts": 1,
+              "prompts": [{
+                  "index": 0, "prompt": "fixture", "input_tokens": P,
+                  "decode_tokens": D, "generated_text": "abc",
+              }],
+              "trace": trace,
+          }
+          with open("/tmp/qwen_fixture.json", "w") as f:
+              json.dump(source, f)
+
+          def dhondt(load):
+              replicas = [1] * E
+              remaining = R - E
+              heap = [(-float(load[e]) / 2.0, e) for e in range(E)]
+              heapq.heapify(heap)
+              while remaining:
+                  _, expert = heapq.heappop(heap)
+                  if replicas[expert] >= G:
+                      continue
+                  replicas[expert] += 1
+                  remaining -= 1
+                  if replicas[expert] < G:
+                      heapq.heappush(heap, (-float(load[expert]) / (replicas[expert] + 1), expert))
+              expert_to_ranks = [[] for _ in range(E)]
+              rank_slots = [0] * G
+              for expert in sorted(range(E), key=lambda e: -replicas[e]):
+                  chosen = sorted(range(G), key=lambda rank: rank_slots[rank])[:replicas[expert]]
+                  for rank in chosen:
+                      expert_to_ranks[expert].append(rank)
+                      rank_slots[rank] += 1
+              assert rank_slots == [R // G] * G
+              per_rank = [[] for _ in range(G)]
+              for expert, ranks in enumerate(expert_to_ranks):
+                  for rank in ranks:
+                      per_rank[rank].append(expert)
+              return [expert for rank in range(G) for expert in per_rank[rank]]
+
+          physical = dhondt([float(E - e) for e in range(E)])
+          placement = {
+              "physical_to_logical": [physical[:] for _ in range(L)],
+              "num_layers": L,
+              "num_physical_experts": R,
+          }
+          with open("/tmp/fixed_placement.json", "w") as f:
+              json.dump(placement, f)
+          PY
+          go run ./cmd/moe-trace-tool convert --input /tmp/qwen_fixture.json --output /tmp/qwen_fixture.moetrace
           go run ./scripts/moe_trace_virtual_benchmark \
-            --trace /tmp/qwen_trace_prompt128.moetrace \
-            --fixed-placement /tmp/fixed_dhondt_placement.json \
+            --trace /tmp/qwen_fixture.moetrace \
+            --fixed-placement /tmp/fixed_placement.json \
             --gpu a100 \
             --token-budget 1024
