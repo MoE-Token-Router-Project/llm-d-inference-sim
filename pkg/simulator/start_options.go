@@ -30,7 +30,8 @@ import (
 // StartOptions contains startup-only simulator options that are intentionally
 // not mutable through the runtime admin configuration API.
 type StartOptions struct {
-	MoETracePath string
+	MoETracePath          string
+	MoEFixedPlacementPath string
 }
 
 // ParseStartOptions consumes startup-only command-line flags and returns the
@@ -39,6 +40,7 @@ func ParseStartOptions(args []string) (StartOptions, []string, error) {
 	var options StartOptions
 	remaining := make([]string, 0, len(args))
 	seenTracePath := false
+	seenPlacementPath := false
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -63,6 +65,22 @@ func ParseStartOptions(args []string) (StartOptions, []string, error) {
 			}
 			options.MoETracePath = strings.TrimPrefix(arg, "--moe-trace-path=")
 			seenTracePath = true
+		case arg == "--moe-fixed-placement-path":
+			if seenPlacementPath {
+				return StartOptions{}, nil, errors.New("--moe-fixed-placement-path may only be specified once")
+			}
+			if i+1 >= len(args) {
+				return StartOptions{}, nil, errors.New("--moe-fixed-placement-path requires a file path")
+			}
+			i++
+			options.MoEFixedPlacementPath = args[i]
+			seenPlacementPath = true
+		case strings.HasPrefix(arg, "--moe-fixed-placement-path="):
+			if seenPlacementPath {
+				return StartOptions{}, nil, errors.New("--moe-fixed-placement-path may only be specified once")
+			}
+			options.MoEFixedPlacementPath = strings.TrimPrefix(arg, "--moe-fixed-placement-path=")
+			seenPlacementPath = true
 		default:
 			remaining = append(remaining, arg)
 		}
@@ -70,6 +88,12 @@ func ParseStartOptions(args []string) (StartOptions, []string, error) {
 
 	if seenTracePath && options.MoETracePath == "" {
 		return StartOptions{}, nil, errors.New("--moe-trace-path requires a non-empty file path")
+	}
+	if seenPlacementPath && options.MoEFixedPlacementPath == "" {
+		return StartOptions{}, nil, errors.New("--moe-fixed-placement-path requires a non-empty file path")
+	}
+	if options.MoEFixedPlacementPath != "" && options.MoETracePath == "" {
+		return StartOptions{}, nil, errors.New("--moe-fixed-placement-path requires --moe-trace-path")
 	}
 	return options, remaining, nil
 }
@@ -83,6 +107,9 @@ func StartWithOptions(ctx context.Context, config *common.Configuration, logger 
 	if options.MoETracePath != "" {
 		if !config.EnableMoE {
 			return nil, errors.New("--moe-trace-path requires --enable-moe")
+		}
+		if config.MoEExpertParallelSize <= 0 {
+			return nil, errors.New("moe expert parallel size must be positive")
 		}
 		if config.MoEPhysicalExpertSlots%config.MoEExpertParallelSize != 0 {
 			return nil, fmt.Errorf("moe physical expert slots (%d) must be divisible by expert parallel size (%d)",
@@ -109,7 +136,16 @@ func StartWithOptions(ctx context.Context, config *common.Configuration, logger 
 		return sims, nil
 	}
 
+	cleanup := func() {
+		for _, sim := range sims {
+			sim.Stop()
+		}
+	}
 	for _, sim := range sims {
+		if err := configureTraceFidelity(sim.Context.moe, sim.Context.Config(), options.MoEFixedPlacementPath); err != nil {
+			cleanup()
+			return nil, fmt.Errorf("configure MoE trace fidelity: %w", err)
+		}
 		sim.Context.dataset = &traceAwareDataset{
 			base: sim.Context.dataset,
 			runtime: &moeTraceRuntime{
