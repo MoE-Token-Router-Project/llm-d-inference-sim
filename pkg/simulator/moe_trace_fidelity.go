@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/llm-d/llm-d-inference-sim/pkg/common"
+	"github.com/llm-d/llm-d-inference-sim/pkg/moetrace"
 )
 
 const (
@@ -38,8 +39,8 @@ const (
 type traceFidelityConfig struct {
 	fixedPlacement bool
 
-	sharedWeightBytes  float64
-	sharedFlopsPerToken float64
+	sharedWeightBytes     float64
+	sharedFlopsPerToken   float64
 	sharedActivationBytes float64
 
 	memoryEfficiency float64
@@ -74,11 +75,11 @@ type tracePrefillJob struct {
 }
 
 type tracePrefillBatcher struct {
-	mu          sync.Mutex
-	pending     []*tracePrefillJob
-	running     bool
-	maxTokens   int
-	coalesce    time.Duration
+	mu        sync.Mutex
+	pending   []*tracePrefillJob
+	running   bool
+	maxTokens int
+	coalesce  time.Duration
 }
 
 var (
@@ -276,8 +277,8 @@ func traceFidelityFor(m *moeSimulator) *traceFidelityConfig {
 		return value.(*traceFidelityConfig)
 	}
 	return &traceFidelityConfig{
-		memoryEfficiency:  1,
-		computeEfficiency: 1,
+		memoryEfficiency:   1,
+		computeEfficiency:  1,
 		prefillBatchTokens: defaultTracePrefillBatchTokens,
 	}
 }
@@ -744,9 +745,21 @@ func (b *tracePrefillBatcher) process(s *SimContext) {
 	}
 }
 
-func addTracePrefillRange(counts moeLayerCounts, prompt interface {
-}, start, end int, m *moeSimulator) {
-	data, ok := prompt.(*struct{})
-	_ = data
-	_ = ok
+func addTracePrefillRange(counts moeLayerCounts, prompt *moetrace.PromptData, start, end int, m *moeSimulator) {
+	inputTokens := len(prompt.InputTokenIDs)
+	if start < 0 {
+		start = 0
+	}
+	if end > inputTokens {
+		end = inputTokens
+	}
+	for layer := 0; layer < m.numLayers; layer++ {
+		for position := start; position < end; position++ {
+			base := (layer*inputTokens + position) * m.topK
+			for index := 0; index < m.topK; index++ {
+				expert := int(prompt.PrefillRoutes[base+index])
+				counts[layer][expert]++
+			}
+		}
+	}
 }
