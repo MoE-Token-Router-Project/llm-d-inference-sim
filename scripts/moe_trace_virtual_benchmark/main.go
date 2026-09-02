@@ -29,6 +29,7 @@ import (
 
 type output struct {
 	GPU     string                            `json:"gpu"`
+	Copies  int                               `json:"copies"`
 	Results []simulator.MoETraceVirtualResult `json:"results"`
 }
 
@@ -39,6 +40,7 @@ func main() {
 	var gpu string
 	var tokenBudget int
 	var maxNumSeqs int
+	var copies int
 	var epSize int
 	var physicalSlots int
 	var hiddenSize int
@@ -54,6 +56,7 @@ func main() {
 	flag.StringVar(&gpu, "gpu", "a100", "hardware preset: a100 or h100")
 	flag.IntVar(&tokenBudget, "token-budget", 1024, "maximum tokens in one virtual forward")
 	flag.IntVar(&maxNumSeqs, "max-num-seqs", 32, "maximum simultaneously active sequences")
+	flag.IntVar(&copies, "copies", 1, "number of times to repeat the complete trace prompt set")
 	flag.IntVar(&epSize, "ep-size", 8, "expert-parallel GPU count")
 	flag.IntVar(&physicalSlots, "physical-slots", 80, "physical expert slots per layer")
 	flag.IntVar(&hiddenSize, "hidden-size", 2048, "model hidden size")
@@ -68,8 +71,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, "--trace is required")
 		os.Exit(2)
 	}
-	if tokenBudget < 1 || maxNumSeqs < 1 || epSize < 1 || physicalSlots < 1 {
-		fmt.Fprintln(os.Stderr, "token budget, max-num-seqs, EP size, and physical slots must be positive")
+	if tokenBudget < 1 || maxNumSeqs < 1 || copies < 1 || epSize < 1 || physicalSlots < 1 {
+		fmt.Fprintln(os.Stderr, "token budget, max-num-seqs, copies, EP size, and physical slots must be positive")
 		os.Exit(2)
 	}
 	if maxNumSeqs > tokenBudget {
@@ -121,6 +124,7 @@ func main() {
 			Config:             config,
 			TokenBudget:        tokenBudget,
 			MaxNumSeqs:         maxNumSeqs,
+			Copies:             copies,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", router, err)
@@ -132,15 +136,15 @@ func main() {
 	if jsonOutput {
 		encoder := json.NewEncoder(os.Stdout)
 		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(output{GPU: gpu, Results: results}); err != nil {
+		if err := encoder.Encode(output{GPU: gpu, Copies: copies, Results: results}); err != nil {
 			fmt.Fprintf(os.Stderr, "encode result: %v\n", err)
 			os.Exit(1)
 		}
 		return
 	}
 
-	fmt.Printf("GPU=%s prompts=%d token_budget=%d max_num_seqs=%d fixed_placement=%t\n",
-		gpu, metadata.NumPrompts, tokenBudget, maxNumSeqs, placementPath != "")
+	fmt.Printf("GPU=%s trace_prompts=%d copies=%d requests=%d token_budget=%d max_num_seqs=%d fixed_placement=%t\n",
+		gpu, metadata.NumPrompts, copies, metadata.NumPrompts*copies, tokenBudget, maxNumSeqs, placementPath != "")
 	fmt.Printf("%-12s %12s %12s %15s %8s %8s %12s\n",
 		"router", "total_ms", "prefill_ms", "decode_only_ms", "steps", "mixed", "output_tok/s")
 	for _, result := range results {
