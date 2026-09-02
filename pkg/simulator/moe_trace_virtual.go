@@ -42,20 +42,20 @@ type MoETraceVirtualOptions struct {
 
 // MoETraceVirtualResult reports modeled time for the routed MoE stack.
 type MoETraceVirtualResult struct {
-	Model                  string
-	Router                 string
-	Requests               int
-	PromptTokens           int
-	OutputTokens           int
-	DecodeForwards         int
-	Steps                  int
-	PrefillSteps           int
-	DecodeOnlySteps        int
-	MixedSteps             int
-	ModeledTime            time.Duration
-	ModeledPrefillTime     time.Duration
-	ModeledDecodeOnlyTime  time.Duration
-	OutputTokensPerSecond  float64
+	Model                 string
+	Router                string
+	Requests              int
+	PromptTokens          int
+	OutputTokens          int
+	DecodeForwards        int
+	Steps                 int
+	PrefillSteps          int
+	DecodeOnlySteps       int
+	MixedSteps            int
+	ModeledTime           time.Duration
+	ModeledPrefillTime    time.Duration
+	ModeledDecodeOnlyTime time.Duration
+	OutputTokensPerSecond float64
 }
 
 type virtualTraceSequence struct {
@@ -77,11 +77,8 @@ func RunMoETraceVirtualBenchmark(options MoETraceVirtualOptions) (MoETraceVirtua
 		return MoETraceVirtualResult{}, errors.New("virtual MoE trace benchmark requires a trace path")
 	}
 	config := *options.Config
-	if !config.EnableMoE {
-		return MoETraceVirtualResult{}, errors.New("virtual MoE trace benchmark requires MoE simulation")
-	}
-	if config.MoEPhysicalExpertSlots%config.MoEExpertParallelSize != 0 {
-		return MoETraceVirtualResult{}, errors.New("physical expert slots must be divisible by expert parallel size")
+	if err := validateVirtualMoEConfig(&config); err != nil {
+		return MoETraceVirtualResult{}, err
 	}
 
 	store, err := loadMoETraceStore(options.TracePath, &config)
@@ -216,6 +213,40 @@ func RunMoETraceVirtualBenchmark(options MoETraceVirtualOptions) (MoETraceVirtua
 		result.OutputTokensPerSecond = float64(result.OutputTokens) / result.ModeledTime.Seconds()
 	}
 	return result, nil
+}
+
+func validateVirtualMoEConfig(config *common.Configuration) error {
+	if !config.EnableMoE {
+		return errors.New("virtual MoE trace benchmark requires MoE simulation")
+	}
+	if config.MoEExpertParallelSize < 1 || config.MoENumExperts < 1 || config.MoENumLayers < 1 {
+		return errors.New("EP size, expert count, and MoE layer count must be positive")
+	}
+	if config.MoEPhysicalExpertSlots < config.MoENumExperts ||
+		config.MoEPhysicalExpertSlots > config.MoENumExperts*config.MoEExpertParallelSize {
+		return errors.New("physical expert slots are outside the valid replica range")
+	}
+	if config.MoEPhysicalExpertSlots%config.MoEExpertParallelSize != 0 {
+		return errors.New("physical expert slots must be divisible by expert parallel size")
+	}
+	if config.MoETopK < 1 || config.MoETopK > config.MoENumExperts {
+		return errors.New("top-k must be between one and the logical expert count")
+	}
+	if config.MoERouter != common.MoERouterSplit &&
+		config.MoERouter != common.MoERouterConcentrate &&
+		config.MoERouter != common.MoERouterHeuristic {
+		return fmt.Errorf("unknown MoE router %q", config.MoERouter)
+	}
+	if config.MoEHiddenSize < 1 || config.MoEIntermediateSize < 1 || config.MoEBytesPerElement < 1 {
+		return errors.New("MoE dimensions and bytes per element must be positive")
+	}
+	if config.MoEGPUFlops <= 0 || config.MoEGPUMemoryBandwidth <= 0 {
+		return errors.New("GPU FLOPS and memory bandwidth must be positive")
+	}
+	if config.MoEExpertParallelSize > 1 && config.MoEInterconnectBandwidth <= 0 {
+		return errors.New("interconnect bandwidth must be positive for multi-GPU EP")
+	}
+	return nil
 }
 
 func hasVirtualWork(sequences []virtualTraceSequence) bool {
