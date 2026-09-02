@@ -229,7 +229,7 @@ func (s *SimContext) bindTraceChatRequest(req *ChatCompletionsRequest) *api.Erro
 			return newTraceRequestError(fmt.Sprintf(
 				"max_completion_tokens %d exceeds the %d decode tokens recorded for trace prompt %d",
 				*maxTokens, replayTokens, promptID))
-			}
+		}
 		replayTokens = int(*maxTokens)
 	}
 	if len(prompt.data.InputTokenIDs)+replayTokens > s.Config().MaxModelLen {
