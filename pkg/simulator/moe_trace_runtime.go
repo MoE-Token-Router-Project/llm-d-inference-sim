@@ -57,9 +57,28 @@ type activeTraceRequest struct {
 	decodePosition int
 }
 
+type traceDecodeStep struct {
+	generation     uint64
+	participants   map[string]struct{}
+	remaining      map[string]struct{}
+	ready          chan struct{}
+	done           chan struct{}
+	startedAt      time.Time
+	modeledLatency time.Duration
+	finishAt       time.Time
+}
+
+type traceDecodeTiming struct {
+	generation     uint64
+	modeledLatency time.Duration
+	finishAt       time.Time
+}
+
 type traceActiveRegistry struct {
-	mu       sync.Mutex
-	requests map[string]*activeTraceRequest
+	mu             sync.Mutex
+	requests       map[string]*activeTraceRequest
+	current        *traceDecodeStep
+	nextGeneration uint64
 }
 
 type moeTraceRuntime struct {
@@ -266,6 +285,18 @@ func (r *traceActiveRegistry) deactivate(requestID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.requests, requestID)
+	if r.current == nil {
+		return
+	}
+	if _, pending := r.current.remaining[requestID]; !pending {
+		return
+	}
+	delete(r.current.remaining, requestID)
+	if len(r.current.remaining) == 0 {
+		step := r.current
+		r.current = nil
+		close(step.done)
+	}
 }
 
 func (r *traceActiveRegistry) advance(requestID string) {
@@ -281,16 +312,15 @@ func (r *traceActiveRegistry) advance(requestID string) {
 	}
 }
 
-func (r *traceActiveRegistry) decodeCounts(m *moeSimulator, runningReqs int64) (moeLayerCounts, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *traceActiveRegistry) decodeCountsLocked(m *moeSimulator, runningReqs int64) (moeLayerCounts, map[string]struct{}, bool) {
 	if len(r.requests) == 0 {
-		return nil, false
+		return nil, nil, false
 	}
 
 	counts := newMoELayerCounts(m.numLayers, m.numExperts)
+	participants := make(map[string]struct{}, len(r.requests))
 	activeTraceTokens := 0
-	for _, state := range r.requests {
+	for requestID, state := range r.requests {
 		position := state.decodePosition
 		if position < 0 || position >= state.execution.outputTokens-1 {
 			continue
@@ -303,10 +333,11 @@ func (r *traceActiveRegistry) decodeCounts(m *moeSimulator, runningReqs int64) (
 				counts[layer][expert]++
 			}
 		}
+		participants[requestID] = struct{}{}
 		activeTraceTokens++
 	}
 	if activeTraceTokens == 0 {
-		return nil, false
+		return nil, nil, false
 	}
 
 	// Existing non-trace requests do not expose per-request decode position.
@@ -321,7 +352,106 @@ func (r *traceActiveRegistry) decodeCounts(m *moeSimulator, runningReqs int64) (
 			}
 		}
 	}
-	return counts, true
+	return counts, participants, true
+}
+
+func (r *traceActiveRegistry) decodeCounts(m *moeSimulator, runningReqs int64) (moeLayerCounts, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	counts, _, ok := r.decodeCountsLocked(m, runningReqs)
+	return counts, ok
+}
+
+// acquireDecodeStep makes one trace MoE calculation represent one shared model
+// forward. Every trace request that was active when the forward started receives
+// the same modeled latency; a request cannot enter its next forward until all
+// participants have completed the current one.
+func (r *traceActiveRegistry) acquireDecodeStep(requestID string, m *moeSimulator,
+	runningReqs int64, baseLatency time.Duration) (traceDecodeTiming, bool) {
+	for {
+		r.mu.Lock()
+		if _, active := r.requests[requestID]; !active {
+			r.mu.Unlock()
+			return traceDecodeTiming{}, false
+		}
+
+		if step := r.current; step != nil {
+			_, participant := step.participants[requestID]
+			_, pending := step.remaining[requestID]
+			if participant && pending {
+				ready := step.ready
+				r.mu.Unlock()
+				<-ready
+				return traceDecodeTiming{
+					generation:     step.generation,
+					modeledLatency: step.modeledLatency,
+					finishAt:       step.finishAt,
+				}, true
+			}
+
+			done := step.done
+			r.mu.Unlock()
+			<-done
+			continue
+		}
+
+		counts, participants, ok := r.decodeCountsLocked(m, runningReqs)
+		if !ok {
+			r.mu.Unlock()
+			return traceDecodeTiming{}, false
+		}
+		step := &traceDecodeStep{
+			generation:   r.nextGeneration,
+			participants: participants,
+			remaining:    make(map[string]struct{}, len(participants)),
+			ready:        make(chan struct{}),
+			done:         make(chan struct{}),
+			startedAt:    time.Now(),
+		}
+		for participant := range participants {
+			step.remaining[participant] = struct{}{}
+		}
+		r.nextGeneration++
+		r.current = step
+		r.mu.Unlock()
+
+		modeledLatency := baseLatency + m.latencyForLayerCounts(counts)
+		r.mu.Lock()
+		step.modeledLatency = modeledLatency
+		step.finishAt = step.startedAt.Add(modeledLatency)
+		close(step.ready)
+		r.mu.Unlock()
+		return traceDecodeTiming{
+			generation:     step.generation,
+			modeledLatency: step.modeledLatency,
+			finishAt:       step.finishAt,
+		}, true
+	}
+}
+
+func (r *traceActiveRegistry) completeDecodeStep(requestID string, generation uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	step := r.current
+	if step == nil || step.generation != generation {
+		return
+	}
+	if _, pending := step.remaining[requestID]; !pending {
+		return
+	}
+	delete(step.remaining, requestID)
+
+	if state, ok := r.requests[requestID]; ok {
+		state.decodePosition++
+		if state.decodePosition >= state.execution.outputTokens-1 {
+			delete(r.requests, requestID)
+		}
+	}
+
+	if len(step.remaining) == 0 {
+		r.current = nil
+		close(step.done)
+	}
 }
 
 func (m *moeSimulator) latencyForLayerCounts(counts moeLayerCounts) time.Duration {
@@ -341,16 +471,25 @@ func (m *moeSimulator) latencyForLayerCounts(counts moeLayerCounts) time.Duratio
 		return 0
 	}
 
+	// Reserve this forward's EPLB position and snapshot the placement while
+	// holding the global state lock. Routing is pure for a fixed placement, so
+	// compute it after releasing the lock; otherwise host-side router runtime
+	// accidentally serializes concurrent requests and leaks into client latency.
 	m.stateMu.Lock()
-	defer m.stateMu.Unlock()
+	placements := make([][][]int, m.numLayers)
+	for layer := 0; layer < m.numLayers; layer++ {
+		placements[layer] = clonePlacement(m.placements[layer])
+	}
+	migrationLatency := m.advanceEPLBLayerCounts(counts)
+	m.stateMu.Unlock()
 
 	totalSeconds := 0.0
 	for layer := 0; layer < m.numLayers; layer++ {
-		state := m.route(counts[layer], m.placements[layer])
+		state := m.route(counts[layer], placements[layer])
 		totalSeconds += m.maxGPUCost(state) + m.communicationCost(state)
 	}
 	latency := time.Duration(totalSeconds * float64(time.Second))
-	return latency + m.advanceEPLBLayerCounts(counts)
+	return latency + migrationLatency
 }
 
 func (m *moeSimulator) advanceEPLBLayerCounts(counts moeLayerCounts) time.Duration {
@@ -416,7 +555,9 @@ func (s *SimContext) simulateTraceTTFT(respCtx ResponseContext, execution *trace
 	if counts := s.tracePrefillCounts(execution, params.CachedPromptTokens); counts != nil {
 		ttft += s.moe.latencyForLayerCounts(counts)
 	}
-	time.Sleep(ttft)
+	if remaining := ttft - time.Since(startPrefill); remaining > 0 {
+		time.Sleep(remaining)
+	}
 	common.WriteToChannel(s.metrics.ttftChan, ttft.Seconds(), s.logger)
 	common.WriteToChannel(s.metrics.reqPrefillTimeChan, time.Since(startPrefill).Seconds(), s.logger)
 
@@ -427,19 +568,24 @@ func (s *SimContext) simulateTraceTTFT(respCtx ResponseContext, execution *trace
 
 func (s *SimContext) simulateTraceInterTokenLatency(requestID string) {
 	params := InterTokenParams{RunningReqs: s.metrics.nRunningReqs.Load()}
-	perTokenLatency := s.latencyCalc().GetInterTokenLatency(&params)
+	baseLatency := s.latencyCalc().GetInterTokenLatency(&params)
 
 	runtime := s.traceRuntime()
-	if runtime == nil {
-		perTokenLatency += s.moeDecodeLatency(&params)
-	} else if counts, ok := runtime.active.decodeCounts(s.moe, params.RunningReqs); ok {
-		perTokenLatency += s.moe.latencyForLayerCounts(counts)
-	} else {
-		perTokenLatency += s.moeDecodeLatency(&params)
-	}
-	time.Sleep(perTokenLatency)
 	if runtime != nil {
-		runtime.active.advance(requestID)
+		if timing, ok := runtime.active.acquireDecodeStep(requestID, s.moe, params.RunningReqs, baseLatency); ok {
+			if remaining := time.Until(timing.finishAt); remaining > 0 {
+				time.Sleep(remaining)
+			}
+			runtime.active.completeDecodeStep(requestID, timing.generation)
+			common.WriteToChannel(s.metrics.tpotChan, timing.modeledLatency.Seconds(), s.logger)
+			return
+		}
+	}
+
+	start := time.Now()
+	perTokenLatency := baseLatency + s.moeDecodeLatency(&params)
+	if remaining := perTokenLatency - time.Since(start); remaining > 0 {
+		time.Sleep(remaining)
 	}
 	common.WriteToChannel(s.metrics.tpotChan, perTokenLatency.Seconds(), s.logger)
 }
