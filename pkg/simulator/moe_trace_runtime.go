@@ -455,41 +455,7 @@ func (r *traceActiveRegistry) completeDecodeStep(requestID string, generation ui
 }
 
 func (m *moeSimulator) latencyForLayerCounts(counts moeLayerCounts) time.Duration {
-	if len(counts) != m.numLayers {
-		return 0
-	}
-	assignments := 0.0
-	for layer := range counts {
-		if len(counts[layer]) != m.numExperts {
-			return 0
-		}
-		for _, count := range counts[layer] {
-			assignments += count
-		}
-	}
-	if assignments == 0 {
-		return 0
-	}
-
-	// Reserve this forward's EPLB position and snapshot the placement while
-	// holding the global state lock. Routing is pure for a fixed placement, so
-	// compute it after releasing the lock; otherwise host-side router runtime
-	// accidentally serializes concurrent requests and leaks into client latency.
-	m.stateMu.Lock()
-	placements := make([][][]int, m.numLayers)
-	for layer := 0; layer < m.numLayers; layer++ {
-		placements[layer] = clonePlacement(m.placements[layer])
-	}
-	migrationLatency := m.advanceEPLBLayerCounts(counts)
-	m.stateMu.Unlock()
-
-	totalSeconds := 0.0
-	for layer := 0; layer < m.numLayers; layer++ {
-		state := m.route(counts[layer], placements[layer])
-		totalSeconds += m.maxGPUCost(state) + m.communicationCost(state)
-	}
-	latency := time.Duration(totalSeconds * float64(time.Second))
-	return latency + migrationLatency
+	return m.traceLatencyForLayerCounts(counts)
 }
 
 func (m *moeSimulator) advanceEPLBLayerCounts(counts moeLayerCounts) time.Duration {
@@ -552,7 +518,9 @@ func (s *SimContext) simulateTraceTTFT(respCtx ResponseContext, execution *trace
 		RunningReqs:        s.metrics.nRunningReqs.Load(),
 	}
 	ttft := s.latencyCalc().GetTimeToFirstToken(&params)
-	if counts := s.tracePrefillCounts(execution, params.CachedPromptTokens); counts != nil {
+	if runtime := s.traceRuntime(); runtime != nil {
+		ttft += traceBatchedPrefillLatency(s, runtime, execution, params.CachedPromptTokens)
+	} else if counts := s.tracePrefillCounts(execution, params.CachedPromptTokens); counts != nil {
 		ttft += s.moe.latencyForLayerCounts(counts)
 	}
 	if remaining := ttft - time.Since(startPrefill); remaining > 0 {
