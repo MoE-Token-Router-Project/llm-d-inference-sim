@@ -43,7 +43,7 @@ type traceFidelityConfig struct {
 	sharedFlopsPerToken   float64
 	sharedActivationBytes float64
 
-	memoryEfficiency float64
+	memoryEfficiency  float64
 	computeEfficiency float64
 	gemmBlockRows     int
 	kernelLaunch      time.Duration
@@ -588,7 +588,7 @@ func (m *moeSimulator) traceCommunicationCost(state *traceRoutingState) float64 
 	return 2 * phaseSeconds
 }
 
-func (m *moeSimulator) traceLatencyForLayerCounts(counts moeLayerCounts) time.Duration {
+func (m *moeSimulator) traceModelLatencyForLayerCounts(counts moeLayerCounts) time.Duration {
 	if len(counts) != m.numLayers {
 		return 0
 	}
@@ -605,7 +605,6 @@ func (m *moeSimulator) traceLatencyForLayerCounts(counts moeLayerCounts) time.Du
 		return 0
 	}
 
-	callStarted := time.Now()
 	options := traceFidelityFor(m)
 	m.stateMu.Lock()
 	placements := make([][][]int, m.numLayers)
@@ -623,8 +622,16 @@ func (m *moeSimulator) traceLatencyForLayerCounts(counts moeLayerCounts) time.Du
 		state := m.traceRoute(counts[layer], placements[layer])
 		totalSeconds += m.traceLayerCost(state, counts[layer]) + m.traceCommunicationCost(state)
 	}
-	modelLatency := time.Duration(totalSeconds*float64(time.Second)) + migrationLatency
-	return options.reserveForward(callStarted, modelLatency)
+	return time.Duration(totalSeconds*float64(time.Second)) + migrationLatency
+}
+
+func (m *moeSimulator) traceLatencyForLayerCounts(counts moeLayerCounts) time.Duration {
+	callStarted := time.Now()
+	modelLatency := m.traceModelLatencyForLayerCounts(counts)
+	if modelLatency <= 0 {
+		return modelLatency
+	}
+	return traceFidelityFor(m).reserveForward(callStarted, modelLatency)
 }
 
 func (options *traceFidelityConfig) reserveForward(callStarted time.Time, modelLatency time.Duration) time.Duration {
@@ -680,7 +687,7 @@ func traceBatchedPrefillLatency(s *SimContext, runtime *moeTraceRuntime, executi
 	}
 	batcher.mu.Unlock()
 	if leader {
-		batcher.process(s)
+		go batcher.process(s)
 	}
 	return <-job.done
 }
