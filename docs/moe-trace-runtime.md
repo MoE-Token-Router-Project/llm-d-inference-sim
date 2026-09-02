@@ -32,7 +32,7 @@ The real vLLM routing experiments can freeze the D'Hondt placement so every rout
 
 This option requires `--moe-trace-path`. The file uses the same `physical_to_logical` format as `VLLM_FIXED_EXPERT_PLACEMENT` in the patched vLLM runtime. The simulator validates the layer count, physical slot count, logical expert IDs, one-copy-per-GPU invariant, and replica order before accepting requests.
 
-When a fixed placement is installed, trace replay does not run online EPLB or charge expert migration. Split, Concentrate, and Heuristic therefore differ only in physical-replica routing, matching the controlled real-GPU experiment.
+When a fixed placement is installed, trace replay does not run online EPLB or charge expert migration. Split, Concentrate, and Heuristic therefore differ only in physical-replica routing, matching the controlled real-GPU experiment. A controlled HTTP run should contain only traced requests; the virtual benchmark below is isolated from the synthetic request path entirely.
 
 ## Replica-routing fidelity
 
@@ -75,11 +75,12 @@ The HTTP path still performs the routing calculation on the host before it can e
 
 Use `scripts/moe_trace_virtual_benchmark` when comparing routing-policy performance with real GPU runs. It does not sleep or use HTTP wall time. It advances a pure modeled clock and implements one shared vLLM-style serving loop:
 
-1. one token from every active decode sequence;
-2. remaining token budget filled by chunked prefill;
-3. one aggregate `[layer][expert]` workload per forward;
-4. one multi-GPU routing/cost calculation per forward;
-5. `N-1` decode forwards for `N` visible generated tokens.
+1. admit no more than `max-num-seqs` active requests and leave later trace prompts queued;
+2. one token from every active decode sequence;
+3. remaining token budget filled by chunked prefill;
+4. one aggregate `[layer][expert]` workload per forward;
+5. one multi-GPU routing/cost calculation per forward;
+6. `N-1` decode forwards for `N` visible generated tokens.
 
 Example for the controlled A100 experiment:
 
@@ -88,8 +89,11 @@ go run ./scripts/moe_trace_virtual_benchmark \
   --trace /data/instructcoder_2000_both.moetrace \
   --fixed-placement /data/fixed_dhondt_placement.json \
   --gpu a100 \
-  --token-budget 1024
+  --token-budget 1024 \
+  --max-num-seqs 32
 ```
+
+Both scheduler limits should match the real vLLM invocation. `max-num-seqs` must not exceed the token budget because a decode-only forward carries one token for every active sequence.
 
 This is the preferred result for answering whether Split, Concentrate, and Heuristic have the same relative ordering as the real vLLM run. `scripts/moe_trace_all_prompts_benchmark` remains useful for HTTP/API and queueing behavior.
 
