@@ -103,13 +103,15 @@ Token throughput uses only successful requests. A response is marked failed if t
 
 ## Comparing routing policies
 
-For the controlled real-GPU comparison, keep the trace, fixed placement, hardware parameters, token budget, and all non-router settings identical and change only the router. Use the virtual benchmark:
+For the controlled real-GPU comparison, keep the trace, fixed placement, hardware parameters, token budget, sequence concurrency, and all non-router settings identical and change only the router. Use the virtual benchmark:
 
 ```bash
 go run ./scripts/moe_trace_virtual_benchmark \
   --trace /path/to/instructcoder_2000_both.moetrace \
   --fixed-placement /path/to/fixed_dhondt_placement.json \
-  --gpu a100
+  --gpu a100 \
+  --token-budget 1024 \
+  --max-num-seqs 32
 ```
 
 The HTTP benchmark can still be run once per router to study simulator/API behavior. Restart the simulator from a fresh process for each run. If a fixed placement is not supplied, online EPLB can evolve placement state, so comparisons no longer isolate replica routing alone.
