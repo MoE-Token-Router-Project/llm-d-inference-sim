@@ -53,6 +53,7 @@ type traceFidelityConfig struct {
 
 	timelineMu    sync.Mutex
 	nextAvailable time.Time
+	profiler      *moeProfileRecorder
 }
 
 type fixedPlacementFile struct {
@@ -261,7 +262,6 @@ func installFixedPlacement(m *moeSimulator, path string) error {
 			if len(replicas) == 0 {
 				return fmt.Errorf("fixed MoE placement layer %d has no replica for logical expert %d", layer, expert)
 			}
-		}
 	}
 
 	m.stateMu.Lock()
@@ -522,7 +522,37 @@ func paddedRows(tokens float64, blockRows int) float64 {
 	return math.Ceil(tokens/float64(blockRows)) * float64(blockRows)
 }
 
-func (m *moeSimulator) traceLayerCost(state *traceRoutingState, counts []float64) float64 {
+type traceGPUExecution struct {
+	gpu             int
+	expertLoads     map[int]float64
+	assignments     float64
+	memoryBytes     float64
+	computeFlops    float64
+	memoryDuration  time.Duration
+	computeDuration time.Duration
+	duration        time.Duration
+	vramBytes       float64
+}
+
+type traceLayerExecution struct {
+	layer          int
+	routerStarted  time.Time
+	routerDuration time.Duration
+	dispatch       time.Duration
+	combine        time.Duration
+	gpus           []traceGPUExecution
+	duration       time.Duration
+}
+
+type traceModelExecution struct {
+	layers       []traceLayerExecution
+	eplbStarted  time.Time
+	eplbDuration time.Duration
+	migration    time.Duration
+	duration     time.Duration
+}
+
+func (m *moeSimulator) traceLayerExecution(state *traceRoutingState, counts []float64) ([]traceGPUExecution, float64) {
 	options := traceFidelityFor(m)
 	totalAssignments := 0.0
 	for _, count := range counts {
@@ -532,6 +562,7 @@ func (m *moeSimulator) traceLayerCost(state *traceRoutingState, counts []float64
 	sharedTokensPerGPU := totalTokens / float64(m.numGPUs)
 
 	maxCost := 0.0
+	executions := make([]traceGPUExecution, 0, m.numGPUs)
 	for gpu := 0; gpu < m.numGPUs; gpu++ {
 		memoryBytes := options.sharedWeightBytes + options.sharedActivationBytes*sharedTokensPerGPU
 		computeFlops := options.sharedFlopsPerToken * sharedTokensPerGPU
@@ -556,11 +587,24 @@ func (m *moeSimulator) traceLayerCost(state *traceRoutingState, counts []float64
 		if cost > maxCost {
 			maxCost = cost
 		}
+		expertLoads := make(map[int]float64, len(state.expertLoads[gpu]))
+		for expert, tokens := range state.expertLoads[gpu] {
+			expertLoads[expert] = tokens
+		}
+		slotsPerGPU := m.physicalSlots / m.numGPUs
+		executions = append(executions, traceGPUExecution{
+			gpu: gpu, expertLoads: expertLoads, assignments: state.loads[gpu],
+			memoryBytes: memoryBytes, computeFlops: computeFlops,
+			memoryDuration:  time.Duration(memorySeconds * float64(time.Second)),
+			computeDuration: time.Duration(computeSeconds * float64(time.Second)),
+			duration:        time.Duration(cost * float64(time.Second)),
+			vramBytes:       float64(slotsPerGPU)*m.expertWeightBytes + options.sharedWeightBytes,
+		})
 	}
-	return maxCost
+	return executions, maxCost
 }
 
-func (m *moeSimulator) traceCommunicationCost(state *traceRoutingState) float64 {
+func (m *moeSimulator) traceCommunicationPhaseCost(state *traceRoutingState) float64 {
 	if m.numGPUs <= 1 {
 		return 0
 	}
@@ -584,25 +628,24 @@ func (m *moeSimulator) traceCommunicationCost(state *traceRoutingState) float64 
 			maxRemote = remoteReceive
 		}
 	}
-	phaseSeconds := maxRemote*m.networkBytes/m.interconnectBW + m.interconnectLatency.Seconds()
-	return 2 * phaseSeconds
+	return maxRemote*m.networkBytes/m.interconnectBW + m.interconnectLatency.Seconds()
 }
 
-func (m *moeSimulator) traceModelLatencyForLayerCounts(counts moeLayerCounts) time.Duration {
+func (m *moeSimulator) traceModelExecutionForLayerCounts(counts moeLayerCounts) traceModelExecution {
 	if len(counts) != m.numLayers {
-		return 0
+		return traceModelExecution{}
 	}
 	assignments := 0.0
 	for layer := range counts {
 		if len(counts[layer]) != m.numExperts {
-			return 0
+			return traceModelExecution{}
 		}
 		for _, count := range counts[layer] {
 			assignments += count
 		}
 	}
 	if assignments == 0 {
-		return 0
+		return traceModelExecution{}
 	}
 
 	options := traceFidelityFor(m)
@@ -612,29 +655,57 @@ func (m *moeSimulator) traceModelLatencyForLayerCounts(counts moeLayerCounts) ti
 		placements[layer] = clonePlacement(m.placements[layer])
 	}
 	migrationLatency := time.Duration(0)
+	eplbStarted := time.Time{}
+	eplbDuration := time.Duration(0)
 	if !options.fixedPlacement {
+		eplbStarted = time.Now()
 		migrationLatency = m.advanceEPLBLayerCounts(counts)
+		eplbDuration = time.Since(eplbStarted)
 	}
 	m.stateMu.Unlock()
 
+	execution := traceModelExecution{
+		eplbStarted: eplbStarted, eplbDuration: eplbDuration, migration: migrationLatency,
+	}
 	totalSeconds := 0.0
 	for layer := 0; layer < m.numLayers; layer++ {
+		routerStarted := time.Now()
 		state := m.traceRoute(counts[layer], placements[layer])
-		totalSeconds += m.traceLayerCost(state, counts[layer]) + m.traceCommunicationCost(state)
+		routerDuration := time.Since(routerStarted)
+		gpus, maxCost := m.traceLayerExecution(state, counts[layer])
+		phase := m.traceCommunicationPhaseCost(state)
+		dispatch := time.Duration(phase * float64(time.Second))
+		compute := time.Duration(maxCost * float64(time.Second))
+		layerExecution := traceLayerExecution{
+			layer: layer, routerStarted: routerStarted, routerDuration: routerDuration, dispatch: dispatch, combine: dispatch,
+			gpus: gpus, duration: dispatch + compute + dispatch,
+		}
+		execution.layers = append(execution.layers, layerExecution)
+		totalSeconds += 2*phase + maxCost
 	}
-	return time.Duration(totalSeconds*float64(time.Second)) + migrationLatency
+	execution.duration = time.Duration(totalSeconds*float64(time.Second)) + migrationLatency
+	return execution
+}
+
+func (m *moeSimulator) traceModelLatencyForLayerCounts(counts moeLayerCounts) time.Duration {
+	return m.traceModelExecutionForLayerCounts(counts).duration
 }
 
 func (m *moeSimulator) traceLatencyForLayerCounts(counts moeLayerCounts) time.Duration {
 	callStarted := time.Now()
-	modelLatency := m.traceModelLatencyForLayerCounts(counts)
-	if modelLatency <= 0 {
-		return modelLatency
+	execution := m.traceModelExecutionForLayerCounts(counts)
+	if execution.duration <= 0 {
+		return execution.duration
 	}
-	return traceFidelityFor(m).reserveForward(callStarted, modelLatency)
+	options := traceFidelityFor(m)
+	start, latency := options.reserveForward(callStarted, execution.duration)
+	if options.profiler != nil {
+		options.profiler.recordExecution(callStarted, start, execution)
+	}
+	return latency
 }
 
-func (options *traceFidelityConfig) reserveForward(callStarted time.Time, modelLatency time.Duration) time.Duration {
+func (options *traceFidelityConfig) reserveForward(callStarted time.Time, modelLatency time.Duration) (time.Time, time.Duration) {
 	options.timelineMu.Lock()
 	defer options.timelineMu.Unlock()
 	start := callStarted
@@ -643,7 +714,7 @@ func (options *traceFidelityConfig) reserveForward(callStarted time.Time, modelL
 	}
 	finish := start.Add(modelLatency)
 	options.nextAvailable = finish
-	return finish.Sub(callStarted)
+	return start, finish.Sub(callStarted)
 }
 
 func tracePrefillBatcherFor(runtime *moeTraceRuntime, m *moeSimulator) *tracePrefillBatcher {
