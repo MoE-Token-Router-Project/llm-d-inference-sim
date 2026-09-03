@@ -34,6 +34,7 @@ func TestMoEProfileRecorderWritesPerfettoTrace(t *testing.T) {
 	}
 	now := time.Now()
 	recorder.recordExecution(now, now, traceModelExecution{
+		requestIDs: []int{42},
 		layers: []traceLayerExecution{{
 			layer:          3,
 			routerStarted:  now,
@@ -67,6 +68,7 @@ func TestMoEProfileRecorderWritesPerfettoTrace(t *testing.T) {
 		t.Fatal("profile contained no trace events")
 	}
 	assertProfileEvent(t, trace.TraceEvents, "MoE MLP", "X")
+	assertProfileRequestID(t, trace.TraceEvents, "MoE MLP", 42)
 	assertProfileEvent(t, trace.TraceEvents, "Compute utilization", "C")
 	assertProfileEvent(t, trace.TraceEvents, "HBM utilization", "C")
 	assertProfileEvent(t, trace.TraceEvents, "VRAM bytes", "C")
@@ -74,6 +76,19 @@ func TestMoEProfileRecorderWritesPerfettoTrace(t *testing.T) {
 	assertNoProfileEventForPID(t, trace.TraceEvents, "Route layer", profilePIDHost)
 	assertProfileEventForPID(t, trace.TraceEvents, "EPLB update", "X", profilePIDSimulated)
 	assertFlowEndsBindToEnclosingSlice(t, trace.TraceEvents)
+}
+
+func assertProfileRequestID(t *testing.T, events []chromeTraceEvent, name string, requestID int) {
+	t.Helper()
+	for _, event := range events {
+		if event.Name != name {
+			continue
+		}
+		if got, ok := event.Args["request_id"]; ok && got == float64(requestID) {
+			return
+		}
+	}
+	t.Fatalf("profile event %q did not contain request_id=%d", name, requestID)
 }
 
 func assertProfileEvent(t *testing.T, events []chromeTraceEvent, name, phase string) {

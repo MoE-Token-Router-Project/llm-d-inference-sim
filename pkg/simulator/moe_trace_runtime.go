@@ -18,6 +18,7 @@ package simulator
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -362,6 +363,25 @@ func (r *traceActiveRegistry) decodeCounts(m *moeSimulator, runningReqs int64) (
 	return counts, ok
 }
 
+func (r *traceActiveRegistry) profileRequestIDsLocked(participants map[string]struct{}) []int {
+	requestIDs := make([]int, 0, len(participants))
+	seen := make(map[int]struct{}, len(participants))
+	for participant := range participants {
+		state, ok := r.requests[participant]
+		if !ok || state.execution == nil {
+			continue
+		}
+		requestID := state.execution.promptID
+		if _, duplicate := seen[requestID]; duplicate {
+			continue
+		}
+		seen[requestID] = struct{}{}
+		requestIDs = append(requestIDs, requestID)
+	}
+	sort.Ints(requestIDs)
+	return requestIDs
+}
+
 // acquireDecodeStep makes one trace MoE calculation represent one shared model
 // forward. Every trace request that was active when the forward started receives
 // the same modeled latency; a request cannot enter its next forward until all
@@ -400,6 +420,7 @@ func (r *traceActiveRegistry) acquireDecodeStep(requestID string, m *moeSimulato
 			r.mu.Unlock()
 			return traceDecodeTiming{}, false
 		}
+		profileRequestIDs := r.profileRequestIDsLocked(participants)
 		step := &traceDecodeStep{
 			generation:   r.nextGeneration,
 			participants: participants,
@@ -415,7 +436,7 @@ func (r *traceActiveRegistry) acquireDecodeStep(requestID string, m *moeSimulato
 		r.current = step
 		r.mu.Unlock()
 
-		modeledLatency := baseLatency + m.latencyForLayerCounts(counts)
+		modeledLatency := baseLatency + m.latencyForLayerCounts(counts, profileRequestIDs...)
 		r.mu.Lock()
 		step.modeledLatency = modeledLatency
 		step.finishAt = step.startedAt.Add(modeledLatency)
@@ -454,8 +475,8 @@ func (r *traceActiveRegistry) completeDecodeStep(requestID string, generation ui
 	}
 }
 
-func (m *moeSimulator) latencyForLayerCounts(counts moeLayerCounts) time.Duration {
-	return m.traceLatencyForLayerCounts(counts)
+func (m *moeSimulator) latencyForLayerCounts(counts moeLayerCounts, requestIDs ...int) time.Duration {
+	return m.traceLatencyForLayerCounts(counts, requestIDs...)
 }
 
 func (m *moeSimulator) advanceEPLBLayerCounts(counts moeLayerCounts) time.Duration {
@@ -521,7 +542,7 @@ func (s *SimContext) simulateTraceTTFT(respCtx ResponseContext, execution *trace
 	if runtime := s.traceRuntime(); runtime != nil {
 		ttft += traceBatchedPrefillLatency(s, runtime, execution, params.CachedPromptTokens)
 	} else if counts := s.tracePrefillCounts(execution, params.CachedPromptTokens); counts != nil {
-		ttft += s.moe.latencyForLayerCounts(counts)
+		ttft += s.moe.latencyForLayerCounts(counts, execution.promptID)
 	}
 	if remaining := ttft - time.Since(startPrefill); remaining > 0 {
 		time.Sleep(remaining)

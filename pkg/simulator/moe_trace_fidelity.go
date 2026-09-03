@@ -546,6 +546,7 @@ type traceLayerExecution struct {
 }
 
 type traceModelExecution struct {
+	requestIDs   []int
 	layers       []traceLayerExecution
 	eplbStarted  time.Time
 	eplbDuration time.Duration
@@ -632,7 +633,7 @@ func (m *moeSimulator) traceCommunicationPhaseCost(state *traceRoutingState) flo
 	return maxRemote*m.networkBytes/m.interconnectBW + m.interconnectLatency.Seconds()
 }
 
-func (m *moeSimulator) traceModelExecutionForLayerCounts(counts moeLayerCounts) traceModelExecution {
+func (m *moeSimulator) traceModelExecutionForLayerCounts(counts moeLayerCounts, requestIDs ...int) traceModelExecution {
 	if len(counts) != m.numLayers {
 		return traceModelExecution{}
 	}
@@ -666,6 +667,7 @@ func (m *moeSimulator) traceModelExecutionForLayerCounts(counts moeLayerCounts) 
 	m.stateMu.Unlock()
 
 	execution := traceModelExecution{
+		requestIDs:  append([]int(nil), requestIDs...),
 		eplbStarted: eplbStarted, eplbDuration: eplbDuration, migration: migrationLatency,
 	}
 	totalSeconds := 0.0
@@ -692,9 +694,9 @@ func (m *moeSimulator) traceModelLatencyForLayerCounts(counts moeLayerCounts) ti
 	return m.traceModelExecutionForLayerCounts(counts).duration
 }
 
-func (m *moeSimulator) traceLatencyForLayerCounts(counts moeLayerCounts) time.Duration {
+func (m *moeSimulator) traceLatencyForLayerCounts(counts moeLayerCounts, requestIDs ...int) time.Duration {
 	callStarted := time.Now()
-	execution := m.traceModelExecutionForLayerCounts(counts)
+	execution := m.traceModelExecutionForLayerCounts(counts, requestIDs...)
 	if execution.duration <= 0 {
 		return execution.duration
 	}
@@ -784,6 +786,8 @@ func (b *tracePrefillBatcher) process(s *SimContext) {
 			budget = defaultTracePrefillBatchTokens
 		}
 		completed := make(map[*tracePrefillJob]struct{})
+		requestIDs := make([]int, 0, len(snapshot))
+		seenRequestIDs := make(map[int]struct{}, len(snapshot))
 		for _, job := range snapshot {
 			if budget == 0 {
 				break
@@ -798,6 +802,11 @@ func (b *tracePrefillBatcher) process(s *SimContext) {
 				take = budget
 			}
 			addTracePrefillRange(counts, job.execution.prompt.data, job.position, job.position+take, s.moe)
+			requestID := job.execution.promptID
+			if _, seen := seenRequestIDs[requestID]; !seen {
+				seenRequestIDs[requestID] = struct{}{}
+				requestIDs = append(requestIDs, requestID)
+			}
 			job.position += take
 			budget -= take
 			if job.position >= job.end {
@@ -805,7 +814,8 @@ func (b *tracePrefillBatcher) process(s *SimContext) {
 			}
 		}
 
-		forwardLatency := s.moe.traceLatencyForLayerCounts(counts)
+		sort.Ints(requestIDs)
+		forwardLatency := s.moe.traceLatencyForLayerCounts(counts, requestIDs...)
 		for _, job := range snapshot {
 			job.elapsed += forwardLatency
 		}
