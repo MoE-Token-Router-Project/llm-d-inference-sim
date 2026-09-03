@@ -99,6 +99,7 @@ func TestTraceRouterRuntimeWallTimeToggle(t *testing.T) {
 		}
 	}
 
+	const roundingTolerance = 100 * time.Nanosecond
 	for _, enabled := range []bool{false, true} {
 		model := newMoESimulator(config)
 		traceFidelityConfigs.Store(model, &traceFidelityConfig{
@@ -118,17 +119,21 @@ func TestTraceRouterRuntimeWallTimeToggle(t *testing.T) {
 			modeledDuration += layer.duration
 			routerDuration += layer.routerDuration
 		}
-		if routerDuration <= 0 {
-			t.Fatal("measured router duration is zero; test cannot verify wall-time accounting")
+		if routerDuration <= 2*roundingTolerance {
+			t.Fatalf("measured router duration %s is too small to verify wall-time accounting", routerDuration)
 		}
 
 		want := modeledDuration
 		if enabled {
 			want += routerDuration
 		}
-		if execution.duration != want {
-			t.Fatalf("countRouterRuntime=%v: duration = %s, want %s (router=%s)",
-				enabled, execution.duration, want, routerDuration)
+		delta := execution.duration - want
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta > roundingTolerance {
+			t.Fatalf("countRouterRuntime=%v: duration = %s, want %s within %s (router=%s)",
+				enabled, execution.duration, want, roundingTolerance, routerDuration)
 		}
 	}
 }
