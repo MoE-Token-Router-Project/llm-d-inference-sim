@@ -262,6 +262,7 @@ func installFixedPlacement(m *moeSimulator, path string) error {
 			if len(replicas) == 0 {
 				return fmt.Errorf("fixed MoE placement layer %d has no replica for logical expert %d", layer, expert)
 			}
+		}
 	}
 
 	m.stateMu.Lock()
