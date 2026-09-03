@@ -338,7 +338,7 @@ func (r *moeProfileRecorder) rebuiltEventsLocked() []chromeTraceEvent {
 	r.events = baseEvents
 	r.nextFlowID = 0
 	profileNextAvailable := time.Time{}
-	for _, record := range recors {
+	for _, record := range records {
 		profileStart := record.start
 		if profileNextAvailable.After(profileStart) {
 			profileStart = profileNextAvailable
