@@ -154,3 +154,27 @@ func TestParseStartOptionsAcceptsFixedPlacement(t *testing.T) {
 		t.Fatalf("remaining=%v", remaining)
 	}
 }
+
+func TestParseStartOptionsAcceptsProfileOutput(t *testing.T) {
+	options, remaining, err := ParseStartOptions([]string{
+		"--moe-trace-path", "trace.moetrace",
+		"--moe-profile-output=profile.trace.json.gz",
+		"--model", "dummy",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.MoEProfileOutput != "profile.trace.json.gz" {
+		t.Fatalf("profile output=%q", options.MoEProfileOutput)
+	}
+	if len(remaining) != 2 || remaining[0] != "--model" || remaining[1] != "dummy" {
+		t.Fatalf("remaining=%v", remaining)
+	}
+}
+
+func TestParseStartOptionsRejectsProfileWithoutTrace(t *testing.T) {
+	_, _, err := ParseStartOptions([]string{"--moe-profile-output", "profile.trace.json"})
+	if err == nil {
+		t.Fatal("expected profile output without trace to fail")
+	}
+}

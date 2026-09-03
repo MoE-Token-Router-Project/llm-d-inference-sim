@@ -235,6 +235,15 @@ func (s *Simulator) InitializeSim(ctx context.Context) error {
 // (workers, metrics, kvcache) to stop cleanly. It must be called by the
 // communication layer after all open requests have been drained.
 func (s *Simulator) Stop() {
+	if s.Context.moe != nil {
+		if value, ok := traceFidelityConfigs.Load(s.Context.moe); ok {
+			if profiler := value.(*traceFidelityConfig).profiler; profiler != nil {
+				if err := profiler.Flush(); err != nil {
+					s.Context.logger.Error(err, "failed to flush MoE profile")
+				}
+			}
+		}
+	}
 	s.drainCancel()
 }
 
@@ -331,7 +340,7 @@ func (s *Simulator) addRequestToQueue(reqCtx requestContext) {
 		reqCtx.signalDone()
 		return
 	}
-	// increment the waiting requests metric
+	// increment waiting requests metric
 	common.WriteToChannel(s.Context.metrics.waitingReqChan, common.MetricInfo{Value: 1}, s.Context.logger)
 	// update loraInfo metrics with the new waiting request
 	if s.Context.isLora(reqCtx.request().GetDisplayedModel()) {
@@ -533,7 +542,7 @@ func (s *Simulator) onResponseProcessingFinished(reqCtx requestContext) {
 
 	model := reqCtx.request().GetDisplayedModel()
 	if s.Context.isLora(model) {
-		// update loraInfo metrics to reflect that the request processing has been finished
+		// update loraInfo metrics with the new waiting request
 		common.WriteToChannel(s.Context.metrics.lorasChan, loraUsage{model, doneUsageState},
 			s.Context.logger)
 	}
