@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/go-logr/logr"
@@ -33,6 +34,7 @@ type StartOptions struct {
 	MoETracePath          string
 	MoEFixedPlacementPath string
 	MoEProfileOutput      string
+	MoECountRouterRuntime bool
 }
 
 // ParseStartOptions consumes startup-only command-line flags and returns the
@@ -43,6 +45,7 @@ func ParseStartOptions(args []string) (StartOptions, []string, error) {
 	seenTracePath := false
 	seenPlacementPath := false
 	seenProfileOutput := false
+	seenCountRouterRuntime := false
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -99,6 +102,23 @@ func ParseStartOptions(args []string) (StartOptions, []string, error) {
 			}
 			options.MoEProfileOutput = strings.TrimPrefix(arg, "--moe-profile-output=")
 			seenProfileOutput = true
+		case arg == "--moe-count-router-runtime":
+			if seenCountRouterRuntime {
+				return StartOptions{}, nil, errors.New("--moe-count-router-runtime may only be specified once")
+			}
+			options.MoECountRouterRuntime = true
+			seenCountRouterRuntime = true
+		case strings.HasPrefix(arg, "--moe-count-router-runtime="):
+			if seenCountRouterRuntime {
+				return StartOptions{}, nil, errors.New("--moe-count-router-runtime may only be specified once")
+			}
+			value := strings.TrimPrefix(arg, "--moe-count-router-runtime=")
+			parsed, err := strconv.ParseBool(value)
+			if err != nil {
+				return StartOptions{}, nil, fmt.Errorf("--moe-count-router-runtime requires a boolean value: %w", err)
+			}
+			options.MoECountRouterRuntime = parsed
+			seenCountRouterRuntime = true
 		default:
 			remaining = append(remaining, arg)
 		}
@@ -118,6 +138,9 @@ func ParseStartOptions(args []string) (StartOptions, []string, error) {
 	}
 	if options.MoEProfileOutput != "" && options.MoETracePath == "" {
 		return StartOptions{}, nil, errors.New("--moe-profile-output requires --moe-trace-path")
+	}
+	if seenCountRouterRuntime && options.MoETracePath == "" {
+		return StartOptions{}, nil, errors.New("--moe-count-router-runtime requires --moe-trace-path")
 	}
 	return options, remaining, nil
 }
@@ -149,7 +172,8 @@ func StartWithOptions(ctx context.Context, config *common.Configuration, logger 
 			"prompts", len(traceStore.prompts),
 			"experts", traceStore.numExperts,
 			"top-k", traceStore.topK,
-			"layers", traceStore.numLayers)
+			"layers", traceStore.numLayers,
+			"count-router-runtime", options.MoECountRouterRuntime)
 	}
 
 	sims, err := Start(ctx, config, logger)
@@ -166,7 +190,8 @@ func StartWithOptions(ctx context.Context, config *common.Configuration, logger 
 		}
 	}
 	for index, sim := range sims {
-		if err := configureTraceFidelity(sim.Context.moe, sim.Context.Config(), options.MoEFixedPlacementPath); err != nil {
+		if err := configureTraceFidelity(sim.Context.moe, sim.Context.Config(), options.MoEFixedPlacementPath,
+			options.MoECountRouterRuntime); err != nil {
 			cleanup()
 			return nil, fmt.Errorf("configure MoE trace fidelity: %w", err)
 		}
