@@ -71,6 +71,7 @@ func TestMoEProfileRecorderWritesPerfettoTrace(t *testing.T) {
 	assertProfileEvent(t, trace.TraceEvents, "Route layer", "i")
 	assertProfileEventForPID(t, trace.TraceEvents, "Route layer", "X", profilePIDHost)
 	assertProfileEventForPID(t, trace.TraceEvents, "EPLB update", "X", profilePIDHost)
+	assertFlowEndsBindToEnclosingSlice(t, trace.TraceEvents)
 }
 
 func assertProfileEvent(t *testing.T, events []chromeTraceEvent, name, phase string) {
@@ -91,4 +92,21 @@ func assertProfileEventForPID(t *testing.T, events []chromeTraceEvent, name, pha
 		}
 	}
 	t.Fatalf("profile did not contain %q phase %q on pid %d", name, phase, pid)
+}
+
+func assertFlowEndsBindToEnclosingSlice(t *testing.T, events []chromeTraceEvent) {
+	t.Helper()
+	found := false
+	for _, event := range events {
+		if event.Ph != "f" {
+			continue
+		}
+		found = true
+		if event.BP != "e" {
+			t.Fatalf("flow end %q had bp=%q, want %q", event.Name, event.BP, "e")
+		}
+	}
+	if !found {
+		t.Fatal("profile contained no flow-end events")
+	}
 }
