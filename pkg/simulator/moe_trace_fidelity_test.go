@@ -103,7 +103,7 @@ func TestFixedPlacementPreservesReplicaOrderAndFreezesEPLB(t *testing.T) {
 	if err := os.WriteFile(path, contents, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := configureTraceFidelity(m, config, path); err != nil {
+	if err := configureTraceFidelity(m, config, path, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := m.placements[0][0]; len(got) != 2 || got[0] != 0 || got[1] != 2 {
@@ -125,7 +125,7 @@ func TestQwenA100TraceFidelityAddsSharedExpertAndKernelCalibration(t *testing.T)
 	config := testMoEConfig(common.MoERouterSplit)
 	config.Model = "Qwen/Qwen1.5-MoE-A2.7B"
 	m := newMoESimulator(config)
-	if err := configureTraceFidelity(m, config, ""); err != nil {
+	if err := configureTraceFidelity(m, config, "", false); err != nil {
 		t.Fatal(err)
 	}
 	options := traceFidelityFor(m)
