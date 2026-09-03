@@ -76,15 +76,12 @@ func newMoEProfileRecorder(path string) (*moeProfileRecorder, error) {
 	if err := file.Close(); err != nil {
 		return nil, fmt.Errorf("close MoE profile: %w", err)
 	}
-	return &moeProfileRecorder{path: path}, nil
+	return &moeProfileRecorder{path: path, origin: time.Now()}, nil
 }
 
-func (r *moeProfileRecorder) recordExecution(callStarted, start time.Time, execution traceModelExecution) {
+func (r *moeProfileRecorder) recordExecution(_ time.Time, start time.Time, execution traceModelExecution) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.origin.IsZero() {
-		r.origin = callStarted
-	}
 	if !r.initialized {
 		numGPUs := 0
 		if len(execution.layers) > 0 {
@@ -107,11 +104,12 @@ func (r *moeProfileRecorder) recordExecution(callStarted, start time.Time, execu
 			"layer":          layer.layer,
 			"host_router_us": durationMicros(layer.routerDuration),
 		})
-		routeFlow := r.newFlowID()
-		r.flow("Route to dispatch", "s", profileTIDRouter, cursor, routeFlow)
-		r.flow("Route to dispatch", "f", profileTIDDispatch, cursor, routeFlow)
+		dispatchStart := cursor
 		if layer.dispatch > 0 {
-			r.span("Expert dispatch", "network.dispatch", profileTIDDispatch, cursor, layer.dispatch, map[string]any{"layer": layer.layer})
+			r.span("Expert dispatch", "network.dispatch", profileTIDDispatch, dispatchStart, layer.dispatch, map[string]any{"layer": layer.layer})
+			routeFlow := r.newFlowID()
+			r.flow("Route to dispatch", "s", profileTIDRouter, dispatchStart, routeFlow)
+			r.flow("Route to dispatch", "f", profileTIDDispatch, midpoint(dispatchStart, layer.dispatch), routeFlow)
 			cursor = cursor.Add(layer.dispatch)
 		}
 		gpuStart := cursor
@@ -123,17 +121,24 @@ func (r *moeProfileRecorder) recordExecution(callStarted, start time.Time, execu
 		}
 		combineStart := gpuStart.Add(gpuDuration)
 		for _, gpu := range layer.gpus {
-			dispatchFlow := r.newFlowID()
-			r.flow("Dispatch to GPU", "s", profileTIDDispatch, gpuStart, dispatchFlow)
-			r.flow("Dispatch to GPU", "f", profileTIDGPUBase+gpu.gpu*10, gpuStart, dispatchFlow)
 			r.recordGPU(gpuStart, layer.layer, gpu)
-			combineFlow := r.newFlowID()
-			r.flow("GPU to combine", "s", profileTIDGPUBase+gpu.gpu*10, gpuStart.Add(gpu.duration), combineFlow)
-			r.flow("GPU to combine", "f", profileTIDCombine, combineStart, combineFlow)
+			if layer.dispatch > 0 && gpu.duration > 0 {
+				dispatchFlow := r.newFlowID()
+				r.flow("Dispatch to GPU", "s", profileTIDDispatch, midpoint(dispatchStart, layer.dispatch), dispatchFlow)
+				r.flow("Dispatch to GPU", "f", profileTIDGPUBase+gpu.gpu*10, midpoint(gpuStart, gpu.duration), dispatchFlow)
+			}
 		}
 		cursor = combineStart
 		if layer.combine > 0 {
 			r.span("Expert combine", "network.combine", profileTIDCombine, cursor, layer.combine, map[string]any{"layer": layer.layer})
+			for _, gpu := range layer.gpus {
+				if gpu.duration <= 0 {
+					continue
+				}
+				combineFlow := r.newFlowID()
+				r.flow("GPU to combine", "s", profileTIDGPUBase+gpu.gpu*10, midpoint(gpuStart, gpu.duration), combineFlow)
+				r.flow("GPU to combine", "f", profileTIDCombine, midpoint(cursor, layer.combine), combineFlow)
+			}
 			cursor = cursor.Add(layer.combine)
 		}
 	}
@@ -267,6 +272,13 @@ func (r *moeProfileRecorder) counter(name string, tid int, at time.Time, value f
 
 func (r *moeProfileRecorder) timestampMicros(at time.Time) float64 {
 	return float64(at.Sub(r.origin)) / float64(time.Microsecond)
+}
+
+func midpoint(start time.Time, duration time.Duration) time.Time {
+	if duration <= 0 {
+		return start
+	}
+	return start.Add(duration / 2)
 }
 
 func durationMicros(duration time.Duration) float64 {
