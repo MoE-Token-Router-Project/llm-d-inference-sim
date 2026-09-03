@@ -30,15 +30,14 @@ import (
 )
 
 const (
-	profilePIDSimulated  = 1
-	profilePIDHost       = 2
-	profileTIDRouter     = 100
-	profileTIDDispatch   = 200
-	profileTIDCombine    = 201
-	profileTIDMigration  = 202
-	profileTIDGPUBase    = 1000
-	profileTIDHostRouter = 100
-	profileTIDHostEPLB   = 101
+	profilePIDSimulated = 1
+	profilePIDHost      = 2
+	profileTIDRouter    = 100
+	profileTIDDispatch  = 200
+	profileTIDCombine   = 201
+	profileTIDMigration = 202
+	profileTIDGPUBase   = 1000
+	profileTIDHostEPLB  = 101
 )
 
 type chromeTraceEvent struct {
@@ -59,11 +58,18 @@ type chromeTraceFile struct {
 	DisplayTimeUnit string             `json:"displayTimeUnit"`
 }
 
+type profiledExecution struct {
+	callStarted time.Time
+	start       time.Time
+	execution   traceModelExecution
+}
+
 type moeProfileRecorder struct {
 	mu          sync.Mutex
 	path        string
 	origin      time.Time
 	events      []chromeTraceEvent
+	executions  []profiledExecution
 	initialized bool
 	nextFlowID  uint64
 }
@@ -79,7 +85,7 @@ func newMoEProfileRecorder(path string) (*moeProfileRecorder, error) {
 	return &moeProfileRecorder{path: path, origin: time.Now()}, nil
 }
 
-func (r *moeProfileRecorder) recordExecution(_ time.Time, start time.Time, execution traceModelExecution) {
+func (r *moeProfileRecorder) recordExecution(callStarted, start time.Time, execution traceModelExecution) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.initialized {
@@ -93,23 +99,32 @@ func (r *moeProfileRecorder) recordExecution(_ time.Time, start time.Time, execu
 	if !execution.eplbStarted.IsZero() && execution.eplbDuration > 0 {
 		r.spanOnProcess("EPLB update", "host.eplb", profilePIDHost, profileTIDHostEPLB, execution.eplbStarted, execution.eplbDuration, nil)
 	}
-	for _, layer := range execution.layers {
-		if !layer.routerStarted.IsZero() && layer.routerDuration > 0 {
-			r.spanOnProcess("Route layer", "host.router", profilePIDHost, profileTIDHostRouter, layer.routerStarted, layer.routerDuration, map[string]any{"layer": layer.layer})
-		}
-	}
+	r.executions = append(r.executions, profiledExecution{callStarted: callStarted, start: start, execution: execution})
+	r.renderExecution(start, execution)
+}
+
+func (r *moeProfileRecorder) renderExecution(start time.Time, execution traceModelExecution) time.Time {
 	cursor := start
 	for _, layer := range execution.layers {
-		r.instant("Route layer", "cpu.router", profileTIDRouter, cursor, map[string]any{
-			"layer":          layer.layer,
-			"host_router_us": durationMicros(layer.routerDuration),
-		})
+		routerStart := cursor
+		if layer.routerDuration > 0 {
+			r.span("Route layer", "cpu.router", profileTIDRouter, routerStart, layer.routerDuration, map[string]any{
+				"layer":         layer.layer,
+				"measured_us":   durationMicros(layer.routerDuration),
+				"timing_source": "simulator_host_cpu",
+			})
+			cursor = cursor.Add(layer.routerDuration)
+		} else {
+			r.instant("Route layer", "cpu.router", profileTIDRouter, routerStart, map[string]any{"layer": layer.layer})
+		}
 		dispatchStart := cursor
 		if layer.dispatch > 0 {
 			r.span("Expert dispatch", "network.dispatch", profileTIDDispatch, dispatchStart, layer.dispatch, map[string]any{"layer": layer.layer})
-			routeFlow := r.newFlowID()
-			r.flow("Route to dispatch", "s", profileTIDRouter, dispatchStart, routeFlow)
-			r.flow("Route to dispatch", "f", profileTIDDispatch, midpoint(dispatchStart, layer.dispatch), routeFlow)
+			if layer.routerDuration > 0 {
+				routeFlow := r.newFlowID()
+				r.flow("Route to dispatch", "s", profileTIDRouter, midpoint(routerStart, layer.routerDuration), routeFlow)
+				r.flow("Route to dispatch", "f", profileTIDDispatch, midpoint(dispatchStart, layer.dispatch), routeFlow)
+			}
 			cursor = cursor.Add(layer.dispatch)
 		}
 		gpuStart := cursor
@@ -144,7 +159,9 @@ func (r *moeProfileRecorder) recordExecution(_ time.Time, start time.Time, execu
 	}
 	if execution.migration > 0 {
 		r.span("Expert migration", "network.migration", profileTIDMigration, cursor, execution.migration, nil)
+		cursor = cursor.Add(execution.migration)
 	}
+	return cursor
 }
 
 func (r *moeProfileRecorder) Flush() error {
@@ -204,11 +221,10 @@ func (r *moeProfileRecorder) recordGPU(start time.Time, layer int, gpu traceGPUE
 func (r *moeProfileRecorder) initializeTracks(numGPUs int) {
 	r.metadataForProcess(profilePIDSimulated, "process_name", 0, map[string]any{"name": "Simulated system"})
 	r.metadataForProcess(profilePIDHost, "process_name", 0, map[string]any{"name": "Simulator host"})
-	r.threadMetadata(profileTIDRouter, map[string]any{"name": "CPU / Router (logical)"})
+	r.threadMetadata(profileTIDRouter, map[string]any{"name": "CPU / Router"})
 	r.threadMetadata(profileTIDDispatch, map[string]any{"name": "Network / Dispatch"})
 	r.threadMetadata(profileTIDCombine, map[string]any{"name": "Network / Combine"})
 	r.threadMetadata(profileTIDMigration, map[string]any{"name": "Network / Expert migration"})
-	r.metadataForProcess(profilePIDHost, "thread_name", profileTIDHostRouter, map[string]any{"name": "Go / MoE router"})
 	r.metadataForProcess(profilePIDHost, "thread_name", profileTIDHostEPLB, map[string]any{"name": "Go / EPLB"})
 	for gpu := 0; gpu < numGPUs; gpu++ {
 		tid := profileTIDGPUBase + gpu*10
@@ -299,6 +315,39 @@ func ratio(numerator, denominator time.Duration) float64 {
 	return value
 }
 
+func (r *moeProfileRecorder) rebuiltEventsLocked() []chromeTraceEvent {
+	baseEvents := make([]chromeTraceEvent, 0, len(r.events))
+	for _, event := range r.events {
+		if event.Ph == "M" || event.Pid == profilePIDHost {
+			baseEvents = append(baseEvents, event)
+		}
+	}
+	records := append([]profiledExecution(nil), r.executions...)
+	sort.SliceStable(records, func(i, j int) bool {
+		if records[i].start.Equal(records[j].start) {
+			return records[i].callStarted.Before(records[j].callStarted)
+		}
+		return records[i].start.Before(records[j].start)
+	})
+
+	savedEvents := r.events
+	savedFlowID := r.nextFlowID
+	r.events = baseEvents
+	r.nextFlowID = 0
+	profileNextAvailable := time.Time{}
+	for _, record := range records {
+		profileStart := record.start
+		if profileNextAvailable.After(profileStart) {
+			profileStart = profileNextAvailable
+		}
+		profileNextAvailable = r.renderExecution(profileStart, record.execution)
+	}
+	rebuilt := append([]chromeTraceEvent(nil), r.events...)
+	r.events = savedEvents
+	r.nextFlowID = savedFlowID
+	return rebuilt
+}
+
 func (r *moeProfileRecorder) flushLocked() error {
 	if r.path == "" {
 		return nil
@@ -318,7 +367,7 @@ func (r *moeProfileRecorder) flushLocked() error {
 		writer = gzipWriter
 	}
 	encoder := json.NewEncoder(writer)
-	if err := encoder.Encode(chromeTraceFile{TraceEvents: r.events, DisplayTimeUnit: "ms"}); err != nil {
+	if err := encoder.Encode(chromeTraceFile{TraceEvents: r.rebuiltEventsLocked(), DisplayTimeUnit: "ms"}); err != nil {
 		_ = temp.Close()
 		return fmt.Errorf("write MoE profile: %w", err)
 	}
