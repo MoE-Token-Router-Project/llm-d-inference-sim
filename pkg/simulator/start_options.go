@@ -32,6 +32,7 @@ import (
 type StartOptions struct {
 	MoETracePath          string
 	MoEFixedPlacementPath string
+	MoEProfileOutput      string
 }
 
 // ParseStartOptions consumes startup-only command-line flags and returns the
@@ -41,6 +42,7 @@ func ParseStartOptions(args []string) (StartOptions, []string, error) {
 	remaining := make([]string, 0, len(args))
 	seenTracePath := false
 	seenPlacementPath := false
+	seenProfileOutput := false
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -81,6 +83,22 @@ func ParseStartOptions(args []string) (StartOptions, []string, error) {
 			}
 			options.MoEFixedPlacementPath = strings.TrimPrefix(arg, "--moe-fixed-placement-path=")
 			seenPlacementPath = true
+		case arg == "--moe-profile-output":
+			if seenProfileOutput {
+				return StartOptions{}, nil, errors.New("--moe-profile-output may only be specified once")
+			}
+			if i+1 >= len(args) {
+				return StartOptions{}, nil, errors.New("--moe-profile-output requires a file path")
+			}
+			i++
+			options.MoEProfileOutput = args[i]
+			seenProfileOutput = true
+		case strings.HasPrefix(arg, "--moe-profile-output="):
+			if seenProfileOutput {
+				return StartOptions{}, nil, errors.New("--moe-profile-output may only be specified once")
+			}
+			options.MoEProfileOutput = strings.TrimPrefix(arg, "--moe-profile-output=")
+			seenProfileOutput = true
 		default:
 			remaining = append(remaining, arg)
 		}
@@ -92,8 +110,14 @@ func ParseStartOptions(args []string) (StartOptions, []string, error) {
 	if seenPlacementPath && options.MoEFixedPlacementPath == "" {
 		return StartOptions{}, nil, errors.New("--moe-fixed-placement-path requires a non-empty file path")
 	}
+	if seenProfileOutput && options.MoEProfileOutput == "" {
+		return StartOptions{}, nil, errors.New("--moe-profile-output requires a non-empty file path")
+	}
 	if options.MoEFixedPlacementPath != "" && options.MoETracePath == "" {
 		return StartOptions{}, nil, errors.New("--moe-fixed-placement-path requires --moe-trace-path")
+	}
+	if options.MoEProfileOutput != "" && options.MoETracePath == "" {
+		return StartOptions{}, nil, errors.New("--moe-profile-output requires --moe-trace-path")
 	}
 	return options, remaining, nil
 }
@@ -141,10 +165,29 @@ func StartWithOptions(ctx context.Context, config *common.Configuration, logger 
 			sim.Stop()
 		}
 	}
-	for _, sim := range sims {
+	for index, sim := range sims {
 		if err := configureTraceFidelity(sim.Context.moe, sim.Context.Config(), options.MoEFixedPlacementPath); err != nil {
 			cleanup()
 			return nil, fmt.Errorf("configure MoE trace fidelity: %w", err)
+		}
+		if options.MoEProfileOutput != "" {
+			profilePath := options.MoEProfileOutput
+			if len(sims) > 1 {
+				suffix := ""
+				base := profilePath
+				if strings.HasSuffix(base, ".gz") {
+					suffix = ".gz"
+					base = strings.TrimSuffix(base, suffix)
+				}
+				profilePath = fmt.Sprintf("%s.%d%s", base, index, suffix)
+			}
+			recorder, err := newMoEProfileRecorder(profilePath)
+			if err != nil {
+				cleanup()
+				return nil, fmt.Errorf("configure MoE profiler: %w", err)
+			}
+			traceFidelityFor(sim.Context.moe).profiler = recorder
+			logger.V(logging.INFO).Info("MoE profiling enabled", "path", profilePath)
 		}
 		sim.Context.dataset = &traceAwareDataset{
 			base: sim.Context.dataset,
