@@ -52,7 +52,7 @@ type MoETraceVirtualResult struct {
 	OutputTokens          int
 	DecodeForwards        int
 	Steps                 int
-	PrefillSteps          int
+	PrefillSteps           int
 	DecodeOnlySteps       int
 	MixedSteps            int
 	ModeledTime           time.Duration
@@ -91,7 +91,7 @@ func RunMoETraceVirtualBenchmark(options MoETraceVirtualOptions) (MoETraceVirtua
 		return MoETraceVirtualResult{}, fmt.Errorf("load MoE trace: %w", err)
 	}
 	model := newMoESimulator(&config)
-	if err := configureTraceFidelity(model, &config, options.FixedPlacementPath); err != nil {
+	if err := configureTraceFidelity(model, &config, options.FixedPlacementPath, false); err != nil {
 		return MoETraceVirtualResult{}, fmt.Errorf("configure trace fidelity: %w", err)
 	}
 
