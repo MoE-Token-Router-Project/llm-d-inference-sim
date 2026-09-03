@@ -50,6 +50,7 @@ type chromeTraceEvent struct {
 	Pid  int            `json:"pid"`
 	Tid  int            `json:"tid"`
 	ID   uint64         `json:"id,omitempty"`
+	BP   string         `json:"bp,omitempty"`
 	Args map[string]any `json:"args,omitempty"`
 }
 
@@ -228,9 +229,16 @@ func (r *moeProfileRecorder) newFlowID() uint64 {
 }
 
 func (r *moeProfileRecorder) flow(name, phase string, tid int, at time.Time, id uint64) {
-	r.events = append(r.events, chromeTraceEvent{
+	event := chromeTraceEvent{
 		Name: name, Cat: "flow", Ph: phase, Ts: r.timestampMicros(at), Pid: profilePIDSimulated, Tid: tid, ID: id,
-	})
+	}
+	if phase == "f" {
+		// Bind the flow endpoint to the slice containing this timestamp. Without
+		// this, Perfetto can attach the endpoint to the next slice on the track,
+		// which makes dependencies appear shifted by one MoE layer.
+		event.BP = "e"
+	}
+	r.events = append(r.events, event)
 }
 
 func (r *moeProfileRecorder) span(name, category string, tid int, start time.Time, duration time.Duration, args map[string]any) {
