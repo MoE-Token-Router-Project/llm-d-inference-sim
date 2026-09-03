@@ -35,6 +35,7 @@ func TestMoEProfileRecorderWritesPerfettoTrace(t *testing.T) {
 	now := time.Now()
 	recorder.recordExecution(now, now, traceModelExecution{
 		requestIDs: []int{42},
+		phase:      traceProfilePhasePrefill,
 		layers: []traceLayerExecution{{
 			layer:          3,
 			routerStarted:  now,
@@ -44,6 +45,9 @@ func TestMoEProfileRecorderWritesPerfettoTrace(t *testing.T) {
 			duration:       49 * time.Microsecond,
 			gpus: []traceGPUExecution{{
 				gpu: 0, expertLoads: map[int]float64{2: 8, 7: 4}, assignments: 12,
+				tokenAssignments: []traceProfileTokenAssignment{{
+					RequestID: 42, Phase: traceProfilePhasePrefill, TokenPosition: 5, MoELayer: 3, ExpertID: 7,
+				}},
 				memoryBytes: 64 << 20, computeFlops: 1.2e12,
 				memoryDuration: 30 * time.Microsecond, computeDuration: 20 * time.Microsecond,
 				duration: 40 * time.Microsecond, vramBytes: 24 << 30,
@@ -69,6 +73,11 @@ func TestMoEProfileRecorderWritesPerfettoTrace(t *testing.T) {
 	}
 	assertProfileEvent(t, trace.TraceEvents, "MoE MLP", "X")
 	assertProfileRequestID(t, trace.TraceEvents, "MoE MLP", 42)
+	assertProfileArg(t, trace.TraceEvents, "MoE MLP", "phase", traceProfilePhasePrefill)
+	assertProfileArg(t, trace.TraceEvents, "MoE MLP", "moe_layer", float64(3))
+	assertProfileTokenAssignment(t, trace.TraceEvents, "MoE MLP", traceProfileTokenAssignment{
+		RequestID: 42, Phase: traceProfilePhasePrefill, TokenPosition: 5, MoELayer: 3, ExpertID: 7,
+	})
 	assertProfileEvent(t, trace.TraceEvents, "Compute utilization", "C")
 	assertProfileEvent(t, trace.TraceEvents, "HBM utilization", "C")
 	assertProfileEvent(t, trace.TraceEvents, "VRAM bytes", "C")
@@ -76,6 +85,43 @@ func TestMoEProfileRecorderWritesPerfettoTrace(t *testing.T) {
 	assertNoProfileEventForPID(t, trace.TraceEvents, "Route layer", profilePIDHost)
 	assertProfileEventForPID(t, trace.TraceEvents, "EPLB update", "X", profilePIDSimulated)
 	assertFlowEndsBindToEnclosingSlice(t, trace.TraceEvents)
+}
+
+func assertProfileArg(t *testing.T, events []chromeTraceEvent, name, key string, want any) {
+	t.Helper()
+	for _, event := range events {
+		if event.Name == name && event.Args[key] == want {
+			return
+		}
+	}
+	t.Fatalf("profile event %q did not contain %s=%v", name, key, want)
+}
+
+func assertProfileTokenAssignment(t *testing.T, events []chromeTraceEvent, name string, want traceProfileTokenAssignment) {
+	t.Helper()
+	for _, event := range events {
+		if event.Name != name {
+			continue
+		}
+		items, ok := event.Args["token_assignments"].([]any)
+		if !ok {
+			continue
+		}
+		for _, item := range items {
+			assignment, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if assignment["request_id"] == float64(want.RequestID) &&
+				assignment["phase"] == want.Phase &&
+				assignment["token_position"] == float64(want.TokenPosition) &&
+				assignment["moe_layer"] == float64(want.MoELayer) &&
+				assignment["expert_id"] == float64(want.ExpertID) {
+				return
+			}
+		}
+	}
+	t.Fatalf("profile event %q did not contain token assignment %+v", name, want)
 }
 
 func assertProfileRequestID(t *testing.T, events []chromeTraceEvent, name string, requestID int) {
