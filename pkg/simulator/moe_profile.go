@@ -103,7 +103,7 @@ func (r *moeProfileRecorder) recordExecution(callStarted, start time.Time, execu
 func (r *moeProfileRecorder) renderExecution(start time.Time, execution traceModelExecution) time.Time {
 	cursor := start
 	if execution.eplbDuration > 0 {
-		r.span("EPLB update", "cpu.eplb", profileTIDEPLB, cursor, execution.eplbDuration, profileArgs(execution.requestIDs, map[string]any{
+		r.span("EPLB update", "cpu.eplb", profileTIDEPLB, cursor, execution.eplbDuration, profileArgs(execution.requestIDs, execution.phase, map[string]any{
 			"measured_us":   durationMicros(execution.eplbDuration),
 			"timing_source": "simulator_host_cpu",
 		}))
@@ -112,18 +112,19 @@ func (r *moeProfileRecorder) renderExecution(start time.Time, execution traceMod
 	for _, layer := range execution.layers {
 		routerStart := cursor
 		if layer.routerDuration > 0 {
-			r.span("Route layer", "cpu.router", profileTIDRouter, routerStart, layer.routerDuration, profileArgs(execution.requestIDs, map[string]any{
+			r.span("Route layer", "cpu.router", profileTIDRouter, routerStart, layer.routerDuration, profileArgs(execution.requestIDs, execution.phase, map[string]any{
 				"layer":         layer.layer,
+				"moe_layer":     layer.layer,
 				"measured_us":   durationMicros(layer.routerDuration),
 				"timing_source": "simulator_host_cpu",
 			}))
 			cursor = cursor.Add(layer.routerDuration)
 		} else {
-			r.instant("Route layer", "cpu.router", profileTIDRouter, routerStart, profileArgs(execution.requestIDs, map[string]any{"layer": layer.layer}))
+			r.instant("Route layer", "cpu.router", profileTIDRouter, routerStart, profileArgs(execution.requestIDs, execution.phase, map[string]any{"layer": layer.layer, "moe_layer": layer.layer}))
 		}
 		dispatchStart := cursor
 		if layer.dispatch > 0 {
-			r.span("Expert dispatch", "network.dispatch", profileTIDDispatch, dispatchStart, layer.dispatch, profileArgs(execution.requestIDs, map[string]any{"layer": layer.layer}))
+			r.span("Expert dispatch", "network.dispatch", profileTIDDispatch, dispatchStart, layer.dispatch, profileArgs(execution.requestIDs, execution.phase, map[string]any{"layer": layer.layer, "moe_layer": layer.layer}))
 			if layer.routerDuration > 0 {
 				routeFlow := r.newFlowID()
 				r.flow("Route to dispatch", "s", profileTIDRouter, midpoint(routerStart, layer.routerDuration), routeFlow)
@@ -140,7 +141,7 @@ func (r *moeProfileRecorder) renderExecution(start time.Time, execution traceMod
 		}
 		combineStart := gpuStart.Add(gpuDuration)
 		for _, gpu := range layer.gpus {
-			r.recordGPU(gpuStart, layer.layer, gpu, execution.requestIDs)
+			r.recordGPU(gpuStart, layer.layer, gpu, execution.requestIDs, execution.phase)
 			if layer.dispatch > 0 && gpu.duration > 0 {
 				dispatchFlow := r.newFlowID()
 				r.flow("Dispatch to GPU", "s", profileTIDDispatch, midpoint(dispatchStart, layer.dispatch), dispatchFlow)
@@ -149,7 +150,7 @@ func (r *moeProfileRecorder) renderExecution(start time.Time, execution traceMod
 		}
 		cursor = combineStart
 		if layer.combine > 0 {
-			r.span("Expert combine", "network.combine", profileTIDCombine, cursor, layer.combine, profileArgs(execution.requestIDs, map[string]any{"layer": layer.layer}))
+			r.span("Expert combine", "network.combine", profileTIDCombine, cursor, layer.combine, profileArgs(execution.requestIDs, execution.phase, map[string]any{"layer": layer.layer, "moe_layer": layer.layer}))
 			for _, gpu := range layer.gpus {
 				if gpu.duration <= 0 {
 					continue
@@ -162,7 +163,7 @@ func (r *moeProfileRecorder) renderExecution(start time.Time, execution traceMod
 		}
 	}
 	if execution.migration > 0 {
-		r.span("Expert migration", "network.migration", profileTIDMigration, cursor, execution.migration, profileArgs(execution.requestIDs, nil))
+		r.span("Expert migration", "network.migration", profileTIDMigration, cursor, execution.migration, profileArgs(execution.requestIDs, execution.phase, nil))
 		cursor = cursor.Add(execution.migration)
 	}
 	return cursor
@@ -174,8 +175,8 @@ func (r *moeProfileRecorder) Flush() error {
 	return r.flushLocked()
 }
 
-func profileArgs(requestIDs []int, values map[string]any) map[string]any {
-	args := make(map[string]any, len(values)+2)
+func profileArgs(requestIDs []int, phase string, values map[string]any) map[string]any {
+	args := make(map[string]any, len(values)+3)
 	for key, value := range values {
 		args[key] = value
 	}
@@ -185,19 +186,23 @@ func profileArgs(requestIDs []int, values map[string]any) map[string]any {
 	if len(requestIDs) > 0 {
 		args["request_ids"] = append([]int(nil), requestIDs...)
 	}
+	if phase != "" {
+		args["phase"] = phase
+	}
 	return args
 }
 
-func (r *moeProfileRecorder) recordGPU(start time.Time, layer int, gpu traceGPUExecution, requestIDs []int) {
+func (r *moeProfileRecorder) recordGPU(start time.Time, layer int, gpu traceGPUExecution, requestIDs []int, phase string) {
 	tid := profileTIDGPUBase + gpu.gpu*10
 	experts := make([]int, 0, len(gpu.expertLoads))
 	for expert := range gpu.expertLoads {
 		experts = append(experts, expert)
 	}
 	sort.Ints(experts)
-	args := profileArgs(requestIDs, map[string]any{
+	args := profileArgs(requestIDs, phase, map[string]any{
 		"gpu":                 gpu.gpu,
 		"layer":               layer,
+		"moe_layer":           layer,
 		"experts":             experts,
 		"expert_token_counts": gpu.expertLoads,
 		"assignments":         gpu.assignments,
@@ -207,6 +212,9 @@ func (r *moeProfileRecorder) recordGPU(start time.Time, layer int, gpu traceGPUE
 		"hbm_us":              durationMicros(gpu.memoryDuration),
 		"vram_bytes":          gpu.vramBytes,
 	})
+	if len(gpu.tokenAssignments) > 0 {
+		args["token_assignments"] = gpu.tokenAssignments
+	}
 	if gpu.duration > 0 {
 		args["compute_utilization"] = ratio(gpu.computeDuration, gpu.duration)
 		args["hbm_utilization"] = ratio(gpu.memoryDuration, gpu.duration)

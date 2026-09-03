@@ -17,7 +17,9 @@ Start trace replay with `--moe-profile-output`:
   --moe-num-layers 24
 ```
 
-Stop the simulator gracefully to finalize the artifact, then open the resulting `.json` or `.json.gz` file in the Perfetto UI. The output contains tracks for CPU routing, dispatch and combine communication, expert migration, and each simulated GPU. GPU operation events include layer, expert token counts, FLOPs, HBM traffic, modeled compute and HBM time, utilization, bottleneck type, and persistent expert-weight VRAM.
+Stop the simulator gracefully to finalize the artifact, then open the resulting `.json` or `.json.gz` file in the Perfetto UI. The output contains tracks for CPU routing, dispatch and combine communication, expert migration, and each simulated GPU. GPU operation events include layer, expert token counts, FLOPs, HBM traffic, modeled compute and HBM time, utilization, bottleneck type, and persistent expert-weight VRAM. Trace-backed GPU events also include `phase` and a `token_assignments` argument. Each token assignment records `request_id`, `phase`, `token_position`, `moe_layer`, and `expert_id`. `moe_layer` is the zero-based MoE layer index used by the simulator. Prefill token positions are zero-based input positions; decode positions continue after the input tokens, matching the positions in the source trace.
+
+The routing cost model operates on expert token counts. When an expert has replicas on multiple GPUs, the profiler deterministically maps the exact trace token assignments onto the routed per-GPU expert counts in stable token order. This mapping preserves the modeled GPU loads but should not be interpreted as a measured physical execution order. Synthetic non-trace decode load remains aggregate-only and therefore has no per-token assignment records.
 
 Compute and HBM utilization are derived from the simulator cost model. They are not measurements from a physical GPU. HBM GB/s is the modeled traffic divided by the modeled GPU phase duration. Persistent VRAM includes physical expert slots and the configured shared expert. KV cache, activation lifetime, communication buffers, and GEMM workspace are not included yet.
 
