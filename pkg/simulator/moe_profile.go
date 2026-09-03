@@ -33,11 +33,11 @@ const (
 	profilePIDSimulated = 1
 	profilePIDHost      = 2
 	profileTIDRouter    = 100
+	profileTIDEPLB      = 101
 	profileTIDDispatch  = 200
 	profileTIDCombine   = 201
 	profileTIDMigration = 202
 	profileTIDGPUBase   = 1000
-	profileTIDHostEPLB  = 101
 )
 
 type chromeTraceEvent struct {
@@ -96,15 +96,19 @@ func (r *moeProfileRecorder) recordExecution(callStarted, start time.Time, execu
 		r.initializeTracks(numGPUs)
 		r.initialized = true
 	}
-	if !execution.eplbStarted.IsZero() && execution.eplbDuration > 0 {
-		r.spanOnProcess("EPLB update", "host.eplb", profilePIDHost, profileTIDHostEPLB, execution.eplbStarted, execution.eplbDuration, nil)
-	}
 	r.executions = append(r.executions, profiledExecution{callStarted: callStarted, start: start, execution: execution})
 	r.renderExecution(start, execution)
 }
 
 func (r *moeProfileRecorder) renderExecution(start time.Time, execution traceModelExecution) time.Time {
 	cursor := start
+	if execution.eplbDuration > 0 {
+		r.span("EPLB update", "cpu.eplb", profileTIDEPLB, cursor, execution.eplbDuration, map[string]any{
+			"measured_us":   durationMicros(execution.eplbDuration),
+			"timing_source": "simulator_host_cpu",
+		})
+		cursor = cursor.Add(execution.eplbDuration)
+	}
 	for _, layer := range execution.layers {
 		routerStart := cursor
 		if layer.routerDuration > 0 {
@@ -220,12 +224,11 @@ func (r *moeProfileRecorder) recordGPU(start time.Time, layer int, gpu traceGPUE
 
 func (r *moeProfileRecorder) initializeTracks(numGPUs int) {
 	r.metadataForProcess(profilePIDSimulated, "process_name", 0, map[string]any{"name": "Simulated system"})
-	r.metadataForProcess(profilePIDHost, "process_name", 0, map[string]any{"name": "Simulator host"})
 	r.threadMetadata(profileTIDRouter, map[string]any{"name": "CPU / Router"})
+	r.threadMetadata(profileTIDEPLB, map[string]any{"name": "CPU / EPLB"})
 	r.threadMetadata(profileTIDDispatch, map[string]any{"name": "Network / Dispatch"})
 	r.threadMetadata(profileTIDCombine, map[string]any{"name": "Network / Combine"})
 	r.threadMetadata(profileTIDMigration, map[string]any{"name": "Network / Expert migration"})
-	r.metadataForProcess(profilePIDHost, "thread_name", profileTIDHostEPLB, map[string]any{"name": "Go / EPLB"})
 	for gpu := 0; gpu < numGPUs; gpu++ {
 		tid := profileTIDGPUBase + gpu*10
 		r.threadMetadata(tid, map[string]any{"name": fmt.Sprintf("GPU %d / Operations", gpu)})
@@ -318,7 +321,7 @@ func ratio(numerator, denominator time.Duration) float64 {
 func (r *moeProfileRecorder) rebuiltEventsLocked() []chromeTraceEvent {
 	baseEvents := make([]chromeTraceEvent, 0, len(r.events))
 	for _, event := range r.events {
-		if event.Ph == "M" || event.Pid == profilePIDHost {
+		if event.Ph == "M" {
 			baseEvents = append(baseEvents, event)
 		}
 	}

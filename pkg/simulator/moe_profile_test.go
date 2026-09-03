@@ -72,7 +72,7 @@ func TestMoEProfileRecorderWritesPerfettoTrace(t *testing.T) {
 	assertProfileEvent(t, trace.TraceEvents, "VRAM bytes", "C")
 	assertProfileEventForPID(t, trace.TraceEvents, "Route layer", "X", profilePIDSimulated)
 	assertNoProfileEventForPID(t, trace.TraceEvents, "Route layer", profilePIDHost)
-	assertProfileEventForPID(t, trace.TraceEvents, "EPLB update", "X", profilePIDHost)
+	assertProfileEventForPID(t, trace.TraceEvents, "EPLB update", "X", profilePIDSimulated)
 	assertFlowEndsBindToEnclosingSlice(t, trace.TraceEvents)
 }
 
