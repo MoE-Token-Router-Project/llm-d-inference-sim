@@ -1,8 +1,8 @@
-# Regular OpenAI all-prompts benchmark
+# moe_simulated_expert_mapping_benchmark
 
-This benchmark sends normal streaming OpenAI chat-completion requests to the simulator. It reads prompt text from a local JSONL dataset and sends every selected prompt at the same time. The request body contains `model`, `messages`, `max_completion_tokens`, `stream`, and `stream_options`; it does not contain `trace_prompt_id` and does not require `--moe-trace-path` on the simulator.
+This benchmark sends normal streaming chat-completion requests to the simulator. It reads prompt text from a local JSONL dataset and sends every selected prompt at the same time. The request body contains `model`, `messages`, `max_completion_tokens`, `stream`, and `stream_options`; it does not contain `trace_prompt_id` and does not require `--moe-trace-path` on the simulator.
 
-The benchmark keeps the measurement definitions used by `scripts/moe_trace_all_prompts_benchmark`. It reports request throughput, output-token throughput, total-token throughput, request latency, TTFT, TPOT, streaming ITL, prefill time, decode time, E2E time, output length, and request launch offsets. Prompt and completion token counts come from the streaming OpenAI usage chunk requested with `stream_options.include_usage=true`.
+The benchmark keeps the measurement definitions used by `scripts/moe_trace_all_prompts_benchmark`. It reports request throughput, output-token throughput, total-token throughput, request latency, TTFT, TPOT, streaming ITL, prefill time, decode time, E2E time, output length, and request launch offsets. Prompt and completion token counts come from the streaming usage chunk requested with `stream_options.include_usage=true`.
 
 ## Dataset format
 
@@ -22,13 +22,13 @@ The helper uses the Hugging Face `datasets` Python package in streaming mode, so
 ```bash
 python3 -m pip install datasets
 
-python3 scripts/moe_openai_all_prompts_benchmark/download_dataset.py \
+python3 scripts/moe_simulated_expert_mapping_benchmark/download_dataset.py \
   --dataset YOUR_HUGGINGFACE_DATASET \
   --split train \
   --prompt-field YOUR_PROMPT_FIELD \
   --limit 2000 \
   --max-completion-tokens 128 \
-  --output datasets/openai_benchmark_2000.jsonl
+  --output datasets/moe_simulated_expert_mapping_benchmark_2000.jsonl
 ```
 
 The prompt field can use dot notation for nested records. If the source dataset already contains a positive integer output-token limit, pass it with `--max-completion-tokens-field FIELD`; otherwise the helper writes the constant from `--max-completion-tokens`.
@@ -38,10 +38,10 @@ The prompt field can use dot notation for nested records. If the source dataset 
 Start the simulator with MoE simulation enabled and with the router and hardware settings you want to measure. No MoE trace file is required for this benchmark. The simulator should have enough `max-num-seqs` and `max-waiting-queue-length` capacity for the number of requests you plan to launch.
 
 ```bash
-./scripts/moe_openai_all_prompts_benchmark/run.sh \
-  --dataset datasets/openai_benchmark_2000.jsonl \
+./scripts/moe_simulated_expert_mapping_benchmark/run.sh \
+  --dataset datasets/moe_simulated_expert_mapping_benchmark_2000.jsonl \
   --base-url http://127.0.0.1:8000 \
-  --output-dir results/openai-heuristic \
+  --output-dir results/simulated-expert-mapping-heuristic \
   --label heuristic
 ```
 
@@ -70,5 +70,5 @@ The CSV contains `prompt_id`, success status, HTTP status, error text, prompt to
 Run the package tests with:
 
 ```bash
-go test ./scripts/moe_openai_all_prompts_benchmark
+go test ./scripts/moe_simulated_expert_mapping_benchmark
 ```

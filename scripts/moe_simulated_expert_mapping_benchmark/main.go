@@ -207,7 +207,7 @@ func main() {
 	flag.StringVar(&opts.datasetPath, "dataset", "", "path to normalized JSONL prompt dataset")
 	flag.StringVar(&opts.baseURL, "base-url", "http://127.0.0.1:8000", "simulator base URL")
 	flag.StringVar(&opts.model, "model", "", "request model; defaults to the simulator model")
-	flag.StringVar(&opts.outputDir, "output-dir", "moe-openai-benchmark-results", "directory for summary.json, summary.txt, and requests.csv")
+	flag.StringVar(&opts.outputDir, "output-dir", "moe-simulated-expert-mapping-benchmark-results", "directory for summary.json, summary.txt, and requests.csv")
 	flag.StringVar(&opts.label, "label", "", "optional label stored with the result, for example split or heuristic")
 	flag.IntVar(&opts.defaultMaxCompletionTokens, "max-completion-tokens", 128, "completion-token limit for dataset rows that omit max_completion_tokens")
 	flag.IntVar(&opts.limit, "limit", 0, "maximum number of dataset rows to submit; 0 submits all rows")
@@ -243,7 +243,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, opts); err != nil {
-		fmt.Fprintf(os.Stderr, "moe OpenAI benchmark: %v\n", err)
+		fmt.Fprintf(os.Stderr, "moe simulated expert mapping benchmark: %v\n", err)
 		os.Exit(1)
 	}
 }

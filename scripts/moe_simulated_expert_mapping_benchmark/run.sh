@@ -45,4 +45,4 @@ if [[ -n "${DATASET_PATH}" && -f "${DATASET_PATH}" ]]; then
 fi
 
 cd "${REPO_ROOT}"
-exec go run ./scripts/moe_openai_all_prompts_benchmark "$@"
+exec go run ./scripts/moe_simulated_expert_mapping_benchmark "$@"

@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=2000, help="number of rows to write")
     parser.add_argument(
         "--output",
-        default="datasets/moe_openai_benchmark.jsonl",
+        default="datasets/moe_simulated_expert_mapping_benchmark.jsonl",
         help="output JSONL path",
     )
     return parser.parse_args()
