@@ -39,7 +39,8 @@ const (
 )
 
 type traceFidelityConfig struct {
-	fixedPlacement bool
+	fixedPlacement     bool
+	countRouterRuntime bool
 
 	sharedWeightBytes     float64
 	sharedFlopsPerToken   float64
@@ -91,8 +92,10 @@ var (
 	traceRuntimeBySimulator sync.Map
 )
 
-func configureTraceFidelity(m *moeSimulator, config *common.Configuration, fixedPlacementPath string) error {
+func configureTraceFidelity(m *moeSimulator, config *common.Configuration, fixedPlacementPath string,
+	countRouterRuntime bool) error {
 	options := &traceFidelityConfig{
+		countRouterRuntime: countRouterRuntime,
 		memoryEfficiency:   1,
 		computeEfficiency:  1,
 		prefillBatchTokens: defaultTracePrefillBatchTokens,
@@ -740,10 +743,14 @@ func (m *moeSimulator) traceModelExecutionForLayerCountsWithProfile(counts moeLa
 		eplbStarted: eplbStarted, eplbDuration: eplbDuration, migration: migrationLatency,
 	}
 	totalSeconds := 0.0
+	routerLatency := time.Duration(0)
 	for layer := 0; layer < m.numLayers; layer++ {
 		routerStarted := time.Now()
 		state := m.traceRoute(counts[layer], placements[layer])
 		routerDuration := time.Since(routerStarted)
+		if options.countRouterRuntime {
+			routerLatency += routerDuration
+		}
 		var profileAssignments []traceProfileTokenAssignment
 		if layer < len(profile.tokenAssignments) {
 			profileAssignments = profile.tokenAssignments[layer]
@@ -759,7 +766,7 @@ func (m *moeSimulator) traceModelExecutionForLayerCountsWithProfile(counts moeLa
 		execution.layers = append(execution.layers, layerExecution)
 		totalSeconds += 2*phase + maxCost
 	}
-	execution.duration = time.Duration(totalSeconds*float64(time.Second)) + migrationLatency
+	execution.duration = time.Duration(totalSeconds*float64(time.Second)) + migrationLatency + routerLatency
 	return execution
 }
 
