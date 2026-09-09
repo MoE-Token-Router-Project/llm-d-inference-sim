@@ -19,6 +19,7 @@ package simulator
 import (
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/llm-d/llm-d-inference-sim/pkg/common"
@@ -45,20 +46,25 @@ type MoETraceVirtualOptions struct {
 
 // MoETraceVirtualResult reports modeled time for the routed MoE stack.
 type MoETraceVirtualResult struct {
-	Model                 string
-	Router                string
-	Requests              int
-	PromptTokens          int
-	OutputTokens          int
-	DecodeForwards        int
-	Steps                 int
-	PrefillSteps           int
-	DecodeOnlySteps       int
-	MixedSteps            int
-	ModeledTime           time.Duration
-	ModeledPrefillTime    time.Duration
-	ModeledDecodeOnlyTime time.Duration
-	OutputTokensPerSecond float64
+	Model                          string
+	Router                         string
+	Requests                       int
+	PromptTokens                   int
+	OutputTokens                   int
+	DecodeForwards                 int
+	Steps                          int
+	PrefillSteps                   int
+	DecodeOnlySteps                int
+	MixedSteps                     int
+	ModeledTime                    time.Duration
+	ModeledPrefillTime             time.Duration
+	ModeledDecodeOnlyTime          time.Duration
+	AttentionModel                 string
+	AttentionLayerCalls            int
+	ModeledAttentionTime           time.Duration
+	ModeledAttentionPrefillTime    time.Duration
+	ModeledAttentionDecodeOnlyTime time.Duration
+	OutputTokensPerSecond          float64
 }
 
 type virtualTraceSequence struct {
@@ -66,6 +72,13 @@ type virtualTraceSequence struct {
 	phase          int
 	prefillPos     int
 	decodePosition int
+}
+
+type virtualAttentionWork struct {
+	// prefixTokens is the number of tokens already present before this query
+	// chunk. queryTokens is one for decode and may be larger for chunked prefill.
+	prefixTokens int
+	queryTokens  int
 }
 
 // RunMoETraceVirtualBenchmark replays all prompts using vLLM-style chunked
@@ -117,8 +130,9 @@ func RunMoETraceVirtualBenchmark(options MoETraceVirtualOptions) (MoETraceVirtua
 
 	sequences := make([]virtualTraceSequence, 0, len(store.prompts)*copies)
 	result := MoETraceVirtualResult{
-		Model:  store.model,
-		Router: config.MoERouter,
+		Model:          store.model,
+		Router:         config.MoERouter,
+		AttentionModel: "flashattention2-roofline-v1",
 	}
 	for copyIndex := 0; copyIndex < copies; copyIndex++ {
 		for _, prompt := range store.prompts {
@@ -154,9 +168,14 @@ func RunMoETraceVirtualBenchmark(options MoETraceVirtualOptions) (MoETraceVirtua
 		}
 
 		counts := newMoELayerCounts(model.numLayers, model.numExperts)
+		attentionWork := make([]virtualAttentionWork, 0, maxNumSeqs)
 		for _, index := range decodeIndices {
 			sequence := &sequences[index]
 			addTraceDecodePosition(counts, sequence.prompt, sequence.decodePosition, model)
+			attentionWork = append(attentionWork, virtualAttentionWork{
+				prefixTokens: len(sequence.prompt.data.InputTokenIDs) + sequence.decodePosition,
+				queryTokens:  1,
+			})
 		}
 		remainingBudget := budget - len(decodeIndices)
 		prefillTokens := 0
@@ -179,8 +198,13 @@ func RunMoETraceVirtualBenchmark(options MoETraceVirtualOptions) (MoETraceVirtua
 			if take > remainingBudget {
 				take = remainingBudget
 			}
+			start := sequence.prefillPos
 			addTracePrefillRange(counts, sequence.prompt.data,
-				sequence.prefillPos, sequence.prefillPos+take, model)
+				start, start+take, model)
+			attentionWork = append(attentionWork, virtualAttentionWork{
+				prefixTokens: start,
+				queryTokens:  take,
+			})
 			sequence.prefillPos += take
 			prefillTokens += take
 			remainingBudget -= take
@@ -199,18 +223,24 @@ func RunMoETraceVirtualBenchmark(options MoETraceVirtualOptions) (MoETraceVirtua
 			return MoETraceVirtualResult{}, errors.New("virtual MoE trace scheduler made no progress")
 		}
 		modeled := model.traceModelLatencyForLayerCounts(counts)
+		attention := modeledVirtualAttentionTime(&config, model, attentionWork)
 		result.ModeledTime += modeled
+		result.ModeledAttentionTime += attention
+		result.AttentionLayerCalls += model.numLayers
 		result.Steps++
 		result.DecodeForwards += len(decodeIndices)
 		if prefillTokens > 0 && len(decodeIndices) > 0 {
 			result.MixedSteps++
 			result.ModeledPrefillTime += modeled
+			result.ModeledAttentionPrefillTime += attention
 		} else if prefillTokens > 0 {
 			result.PrefillSteps++
 			result.ModeledPrefillTime += modeled
+			result.ModeledAttentionPrefillTime += attention
 		} else {
 			result.DecodeOnlySteps++
 			result.ModeledDecodeOnlyTime += modeled
+			result.ModeledAttentionDecodeOnlyTime += attention
 		}
 
 		for _, index := range decodeIndices {
@@ -232,6 +262,67 @@ func RunMoETraceVirtualBenchmark(options MoETraceVirtualOptions) (MoETraceVirtua
 		result.OutputTokensPerSecond = float64(result.OutputTokens) / result.ModeledTime.Seconds()
 	}
 	return result, nil
+}
+
+func modeledVirtualAttentionTime(config *common.Configuration, model *moeSimulator, work []virtualAttentionWork) time.Duration {
+	if len(work) == 0 || config == nil || model == nil || model.numLayers <= 0 {
+		return 0
+	}
+	hidden := float64(config.MoEHiddenSize)
+	bytesPerElement := float64(config.MoEBytesPerElement)
+	if hidden <= 0 || bytesPerElement <= 0 || model.gpuFlops <= 0 || model.gpuBandwidth <= 0 {
+		return 0
+	}
+
+	// This models the exact scope of the vLLM Attention.forward NVTX range used
+	// by the A100 fidelity experiment: KV-cache update plus FlashAttention, while
+	// excluding QKV projection, rotary embedding, and output projection.
+	//
+	// For one causal sequence with q query tokens and p tokens already cached,
+	// the number of visible query/key pairs is q*p + q*(q+1)/2. QK^T and PV
+	// together cost about 4*d FLOPs per visible pair. The memory model reads Q
+	// and O, reads K/V through the visible context once, and writes the q new K/V
+	// vectors to cache: (2*p + 6*q)*d elements. This is a deliberately simple
+	// FlashAttention-2 roofline, not a fit to the measured attention results.
+	visiblePairs := 0.0
+	memoryElementsPerHidden := 0.0
+	for _, item := range work {
+		if item.queryTokens <= 0 {
+			continue
+		}
+		p := float64(item.prefixTokens)
+		if p < 0 {
+			p = 0
+		}
+		q := float64(item.queryTokens)
+		visiblePairs += q*p + q*(q+1)/2
+		memoryElementsPerHidden += 2*p + 6*q
+	}
+	if visiblePairs <= 0 {
+		return 0
+	}
+
+	flops := 4 * hidden * visiblePairs
+	memoryBytes := hidden * bytesPerElement * memoryElementsPerHidden
+	options := traceFidelityFor(model)
+	computeEfficiency := options.computeEfficiency
+	memoryEfficiency := options.memoryEfficiency
+	if computeEfficiency <= 0 {
+		computeEfficiency = 1
+	}
+	if memoryEfficiency <= 0 {
+		memoryEfficiency = 1
+	}
+	computeSeconds := flops / (model.gpuFlops * computeEfficiency)
+	memorySeconds := memoryBytes / (model.gpuBandwidth * memoryEfficiency)
+	layerSeconds := math.Max(computeSeconds, memorySeconds)
+
+	// vLLM's Attention.forward range contains two GPU operations in these A100
+	// profiles: KV-cache update and FlashAttention. Reuse the hardware launch
+	// preset already used by the MoE fidelity model and charge two launches.
+	layerSeconds += 2 * options.kernelLaunch.Seconds()
+	layerDuration := time.Duration(layerSeconds * float64(time.Second))
+	return layerDuration * time.Duration(model.numLayers)
 }
 
 func validateVirtualMoEConfig(config *common.Configuration) error {
