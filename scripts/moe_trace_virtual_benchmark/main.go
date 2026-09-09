@@ -145,14 +145,17 @@ func main() {
 
 	fmt.Printf("GPU=%s trace_prompts=%d copies=%d requests=%d token_budget=%d max_num_seqs=%d fixed_placement=%t\n",
 		gpu, metadata.NumPrompts, copies, metadata.NumPrompts*copies, tokenBudget, maxNumSeqs, placementPath != "")
-	fmt.Printf("%-12s %12s %12s %15s %8s %8s %12s\n",
-		"router", "total_ms", "prefill_ms", "decode_only_ms", "steps", "mixed", "output_tok/s")
+	fmt.Printf("%-12s %12s %12s %15s %12s %12s %15s %8s %8s %12s\n",
+		"router", "moe_ms", "moe_pre_ms", "moe_dec_ms", "attn_ms", "attn_pre_ms", "attn_dec_ms", "steps", "mixed", "output_tok/s")
 	for _, result := range results {
-		fmt.Printf("%-12s %12.3f %12.3f %15.3f %8d %8d %12.1f\n",
+		fmt.Printf("%-12s %12.3f %12.3f %15.3f %12.3f %12.3f %15.3f %8d %8d %12.1f\n",
 			result.Router,
 			float64(result.ModeledTime)/float64(time.Millisecond),
 			float64(result.ModeledPrefillTime)/float64(time.Millisecond),
 			float64(result.ModeledDecodeOnlyTime)/float64(time.Millisecond),
+			float64(result.ModeledAttentionTime)/float64(time.Millisecond),
+			float64(result.ModeledAttentionPrefillTime)/float64(time.Millisecond),
+			float64(result.ModeledAttentionDecodeOnlyTime)/float64(time.Millisecond),
 			result.Steps,
 			result.MixedSteps,
 			result.OutputTokensPerSecond)
