@@ -41,6 +41,15 @@ func TestVirtualTraceSchedulerChargesNMinusOneDecodeForwards(t *testing.T) {
 	if result.ModeledTime <= 0 || result.OutputTokensPerSecond <= 0 {
 		t.Fatalf("virtual benchmark did not report modeled time: %+v", result)
 	}
+	if result.AttentionModel != "flashattention2-roofline-v1" || result.ModeledAttentionTime <= 0 {
+		t.Fatalf("virtual benchmark did not report attention time: %+v", result)
+	}
+	if result.AttentionLayerCalls != result.Steps*config.MoENumLayers {
+		t.Fatalf("attention layer calls=%d, want %d", result.AttentionLayerCalls, result.Steps*config.MoENumLayers)
+	}
+	if result.ModeledAttentionTime != result.ModeledAttentionPrefillTime+result.ModeledAttentionDecodeOnlyTime {
+		t.Fatalf("attention phase totals do not add up: %+v", result)
+	}
 }
 
 func TestVirtualTraceSchedulerSupportsOneSequencePerForwardBudget(t *testing.T) {
