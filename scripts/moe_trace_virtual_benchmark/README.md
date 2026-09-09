@@ -29,6 +29,14 @@ go run ./scripts/moe_trace_virtual_benchmark \
 
 The default Qwen1.5 settings are EP=8, 80 physical slots, hidden size 2048, routed intermediate size 1408, BF16, a 1024-token forward budget, `max-num-seqs=32`, one trace-set copy, and a 400 GB/s interconnect with 5 us one-way phase latency. `--gpu a100` selects 312 TFLOP/s and 2.0 TB/s; `--gpu h100` selects 990 TFLOP/s and 3.35 TB/s. The trace fidelity layer then applies the same achieved-efficiency, 128-row GEMM padding, launch-overhead, and Qwen shared-expert model documented in `docs/moe-trace-runtime.md`.
 
+## Attention timing estimate
+
+The virtual benchmark also reports `ModeledAttentionTime`, `ModeledAttentionPrefillTime`, and `ModeledAttentionDecodeOnlyTime` in JSON output (and `attn_ms`, `attn_pre_ms`, and `attn_dec_ms` in the table). This estimate is intentionally separate from `ModeledTime`, which keeps its existing meaning as routed/shared-expert MoE time. Adding attention reporting therefore does not change existing MoE timing or policy ordering.
+
+The attention estimate targets the same scope as the vLLM `Attention.forward` NVTX range used by the single-A100 fidelity experiment: KV-cache update plus the selected attention backend, excluding QKV projection, rotary embedding, and output projection. The current model is named `flashattention2-roofline-v1`. For each sequence in a virtual forward, if `p` tokens are already present and the forward contributes `q` query tokens, causal attention has `q*p + q*(q+1)/2` visible query/key pairs. The model charges approximately `4*d` FLOPs per pair for QK^T and PV, and `(2*p + 6*q)*d` element transfers for Q/output, K/V reads, and K/V cache writes. It uses the same GPU compute/memory efficiencies as the existing trace-fidelity model and charges two hardware launch-overhead terms per layer, corresponding to KV-cache update plus FlashAttention.
+
+This is an analytical roofline estimate, not a fit to measured attention timings. In particular, it does not attempt to reproduce Python/dispatcher gaps that may be included in Nsight's GPU-projected span between the first and last GPU operation inside an NVTX range. `AttentionLayerCalls` is also reported so a measured per-layer range count can be compared directly with the virtual scheduler.
+
 `--max-num-seqs` must not exceed `--token-budget`, because a decode-only forward contains one token for every active sequence. Change both values when reproducing a real run that used different scheduler limits.
 
 By default all three custom policies are evaluated:
