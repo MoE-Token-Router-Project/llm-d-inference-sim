@@ -36,12 +36,12 @@ const (
 var fileMagic = [8]byte{'M', 'O', 'E', 'T', 'R', 'C', '0', '1'}
 
 type Metadata struct {
-	FormatVersion uint32           `json:"format_version"`
-	Model         string           `json:"model"`
-	NumExperts    int              `json:"num_experts"`
-	TopK          int              `json:"top_k"`
-	SparseLayers  []int            `json:"sparse_layers"`
-	NumPrompts    int              `json:"num_prompts"`
+	FormatVersion  uint32           `json:"format_version"`
+	Model          string           `json:"model"`
+	NumExperts     int              `json:"num_experts"`
+	TopK           int              `json:"top_k"`
+	SparseLayers   []int            `json:"sparse_layers"`
+	NumPrompts     int              `json:"num_prompts"`
 	ExpertIDBytes  int              `json:"expert_id_bytes"`
 	SourceGPUBytes int              `json:"source_gpu_bytes,omitempty"`
 	Prompts        []PromptMetadata `json:"prompts"`
