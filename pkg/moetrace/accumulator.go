@@ -29,8 +29,10 @@ type promptAccumulator struct {
 	prefillSeen     []bool
 	decodeSeen      []bool
 	prefillCounts   []uint32
-	prefillRoutes   []uint16
-	decodeRoutes    []uint16
+	prefillRoutes     []uint16
+	decodeRoutes      []uint16
+	prefillSourceGPUs []uint8
+	decodeSourceGPUs  []uint8
 }
 
 func newPromptAccumulator(meta sourcePromptMetadata, source sourceMetadata, layerSlots map[int]int) (*promptAccumulator, error) {
@@ -60,8 +62,10 @@ func newPromptAccumulator(meta sourcePromptMetadata, source sourceMetadata, laye
 		prefillSeen:     make([]bool, p*l),
 		decodeSeen:      make([]bool, d*l),
 		prefillCounts:   make([]uint32, l*source.NumExperts),
-		prefillRoutes:   make([]uint16, l*p*k),
-		decodeRoutes:    make([]uint16, d*l*k),
+		prefillRoutes:     make([]uint16, l*p*k),
+		decodeRoutes:      make([]uint16, d*l*k),
+		prefillSourceGPUs: filledSourceGPUs(p * l),
+		decodeSourceGPUs:  filledSourceGPUs(d * l),
 	}, nil
 }
 
@@ -96,6 +100,10 @@ func (p *promptAccumulator) add(record sourceTraceRecord) error {
 		experts[i] = uint16(expert)
 	}
 
+	sourceGPU, err := record.sourceGPU()
+	if err != nil {
+		return fmt.Errorf("prompt %d layer %d position %d: %w", p.meta.Index, record.Layer, record.Position, err)
+	}
 	tokenID := uint32(record.TokenID)
 	switch record.Phase {
 	case "prefill":
@@ -114,6 +122,7 @@ func (p *promptAccumulator) add(record sourceTraceRecord) error {
 		p.inputTokenIDs[record.Position] = tokenID
 		routeBase := seenIndex * p.topK
 		copy(p.prefillRoutes[routeBase:routeBase+p.topK], experts)
+		p.prefillSourceGPUs[seenIndex] = sourceGPU
 		countBase := layerSlot * p.numExperts
 		for _, expert := range record.Experts {
 			if p.prefillCounts[countBase+expert] == ^uint32(0) {
@@ -138,6 +147,7 @@ func (p *promptAccumulator) add(record sourceTraceRecord) error {
 		p.decodeTokenIDs[decodePosition] = tokenID
 		routeBase := seenIndex * p.topK
 		copy(p.decodeRoutes[routeBase:routeBase+p.topK], experts)
+		p.decodeSourceGPUs[seenIndex] = sourceGPU
 	default:
 		return fmt.Errorf("prompt %d has unsupported phase %q", p.meta.Index, record.Phase)
 	}
@@ -173,4 +183,13 @@ func (p *promptAccumulator) validateComplete() error {
 		}
 	}
 	return nil
+}
+
+
+func filledSourceGPUs(length int) []uint8 {
+	values := make([]uint8, length)
+	for i := range values {
+		values[i] = UnknownSourceGPU
+	}
+	return values
 }
