@@ -33,17 +33,17 @@ type Reader struct {
 }
 
 type PromptData struct {
-	Metadata       PromptMetadata
-	InputTokenIDs  []uint32
-	DecodeTokenIDs []uint32
-	PrefillCounts  []uint32
-	PrefillRoutes  []uint16
+	Metadata          PromptMetadata
+	InputTokenIDs     []uint32
+	DecodeTokenIDs    []uint32
+	PrefillCounts     []uint32
+	PrefillRoutes     []uint16
 	DecodeRoutes      []uint16
 	PrefillSourceGPUs []uint8
 	DecodeSourceGPUs  []uint8
 	numLayers         int
-	numExperts     int
-	topK           int
+	numExperts        int
+	topK              int
 }
 
 func Open(path string) (*Reader, error) {
