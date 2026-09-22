@@ -92,6 +92,27 @@ func TestConvertAndRead(t *testing.T) {
 	if count != 2 {
 		t.Fatalf("prefill expert count = %d, want 2", count)
 	}
+	gpu, present, err := prompt.PrefillSourceGPU(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !present || gpu != 0 {
+		t.Fatalf("prefill source GPU = (%d, %v), want (0, true)", gpu, present)
+	}
+	gpu, present, err = prompt.PrefillSourceGPU(1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if present {
+		t.Fatalf("prefill source GPU = (%d, %v), want absent", gpu, present)
+	}
+	gpu, present, err = prompt.DecodeSourceGPU(1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !present || gpu != 1 {
+		t.Fatalf("decode source GPU = (%d, %v), want (1, true)", gpu, present)
+	}
 }
 
 func TestConvertRejectsMissingRoute(t *testing.T) {
@@ -144,12 +165,16 @@ func makeTestSource() testSource {
 	for _, prompt := range prompts {
 		for layerSlot, layer := range layers {
 			for position := 0; position < prompt.InputTokens; position++ {
-				records = append(records, sourceTraceRecord{
+				record := sourceTraceRecord{
 					Prompt: prompt.Index, Phase: "prefill", Position: position,
 					TokenID: int64(100 + prompt.Index*10 + position), Layer: layer,
 					Experts:     []int{(position + layerSlot) % 4, (position + layerSlot + 1) % 4},
 					GateWeights: []float64{0.6, 0.4},
-				})
+				}
+				if !(prompt.Index == 0 && layerSlot == 1 && position == 1) {
+					record.SourceGPU = int64Ptr(int64((position + layerSlot) % 2))
+				}
+				records = append(records, record)
 			}
 		}
 		for decode := 0; decode < prompt.DecodeTokens; decode++ {
@@ -159,6 +184,7 @@ func makeTestSource() testSource {
 					TokenID: int64(200 + prompt.Index*10 + decode), Layer: layer,
 					Experts:     []int{(decode + layerSlot) % 4, (decode + layerSlot + 1) % 4},
 					GateWeights: []float64{0.7, 0.3},
+					SourceGPU: int64Ptr(int64(decode % 2)),
 				})
 			}
 		}
@@ -202,4 +228,8 @@ func equalUint16(a, b []uint16) bool {
 		}
 	}
 	return true
+}
+
+func int64Ptr(value int64) *int64 {
+	return &value
 }
