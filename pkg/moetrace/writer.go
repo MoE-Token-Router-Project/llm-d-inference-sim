@@ -47,12 +47,12 @@ func newTraceWriter(file *os.File, source sourceMetadata) (*traceWriter, error) 
 		}
 	}
 	metadata := Metadata{
-		FormatVersion: FormatVersion,
-		Model:         source.Model,
-		NumExperts:    source.NumExperts,
-		TopK:          source.TopK,
-		SparseLayers:  append([]int(nil), source.SparseLayers...),
-		NumPrompts:    source.NumPrompts,
+		FormatVersion:  FormatVersion,
+		Model:          source.Model,
+		NumExperts:     source.NumExperts,
+		TopK:           source.TopK,
+		SparseLayers:   append([]int(nil), source.SparseLayers...),
+		NumPrompts:     source.NumPrompts,
 		ExpertIDBytes:  expertBytes,
 		SourceGPUBytes: SourceGPUBytes,
 		Prompts:        prompts,
