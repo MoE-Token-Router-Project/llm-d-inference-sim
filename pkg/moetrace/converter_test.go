@@ -313,13 +313,13 @@ func writeVersion1TestTrace(t *testing.T, path string) {
 	t.Helper()
 	metadata := Metadata{
 		FormatVersion: 1,
-		Model:          "legacy/moe",
-		NumExperts:     4,
-		TopK:           2,
-		SparseLayers:   []int{1},
-		NumPrompts:     1,
-		ExpertIDBytes:  1,
-		Prompts:        []PromptMetadata{{Index: 0, InputTokens: 1, DecodeTokens: 1}},
+		Model:         "legacy/moe",
+		NumExperts:    4,
+		TopK:          2,
+		SparseLayers:  []int{1},
+		NumPrompts:    1,
+		ExpertIDBytes: 1,
+		Prompts:       []PromptMetadata{{Index: 0, InputTokens: 1, DecodeTokens: 1}},
 	}
 	metadataBytes, err := json.Marshal(metadata)
 	if err != nil {
