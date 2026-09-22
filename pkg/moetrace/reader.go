@@ -177,7 +177,7 @@ func (r *Reader) Validate() error {
 		if int(numLayers) != len(r.metadata.SparseLayers) || int(numExperts) != r.metadata.NumExperts || int(topK) != r.metadata.TopK || int(expertBytes) != r.metadata.ExpertIDBytes {
 			return fmt.Errorf("prompt %d block dimensions do not match metadata", i)
 		}
-		expectedLength, err := promptBlockLength(uint64(inputTokens), uint64(decodeTokens), uint64(numLayers), uint64(numExperts), uint64(topK), uint64(expertBytes))
+		expectedLength, err := promptBlockLength(uint64(inputTokens), uint64(decodeTokens), uint64(numLayers), uint64(numExperts), uint64(topK), uint64(expertBytes), r.header.Version)
 		if err != nil {
 			return err
 		}
@@ -255,7 +255,7 @@ func (p *PromptData) PrefillExperts(layerSlot, position int) ([]uint16, error) {
 	return p.PrefillRoutes[base : base+p.topK], nil
 }
 
-func (p *PromptData) DecodeExperts(position, layerSlot int) ([]uint16, error) {
+func (p *PromptData) PrefillSourceGPU(layerSlot, position int) (uint32, bool, error) {\n\tif layerSlot < 0 || layerSlot >= p.numLayers || position < 0 || position >= len(p.InputTokenIDs) {\n\t\treturn 0, false, errors.New("prefill source GPU index out of range")\n\t}\n\tif p.formatVersion < 2 {\n\t\treturn 0, false, nil\n\t}\n\tvalue := p.PrefillSourceGPUs[layerSlot*len(p.InputTokenIDs)+position]\n\treturn value, value != ^uint32(0), nil\n}\n\nfunc (p *PromptData) DecodeSourceGPU(position, layerSlot int) (uint32, bool, error) {\n\tif position < 0 || position >= len(p.DecodeTokenIDs) || layerSlot < 0 || layerSlot >= p.numLayers {\n\t\treturn 0, false, errors.New("decode source GPU index out of range")\n\t}\n\tif p.formatVersion < 2 {\n\t\treturn 0, false, nil\n\t}\n\tvalue := p.DecodeSourceGPUs[position*p.numLayers+layerSlot]\n\treturn value, value != ^uint32(0), nil\n}\n\nfunc (p *PromptData) DecodeExperts(position, layerSlot int) ([]uint16, error) {
 	if position < 0 || position >= len(p.DecodeTokenIDs) || layerSlot < 0 || layerSlot >= p.numLayers {
 		return nil, errors.New("decode route index out of range")
 	}
