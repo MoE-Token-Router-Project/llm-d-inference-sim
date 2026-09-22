@@ -53,8 +53,9 @@ func newTraceWriter(file *os.File, source sourceMetadata) (*traceWriter, error) 
 		TopK:          source.TopK,
 		SparseLayers:  append([]int(nil), source.SparseLayers...),
 		NumPrompts:    source.NumPrompts,
-		ExpertIDBytes: expertBytes,
-		Prompts:       prompts,
+		ExpertIDBytes:  expertBytes,
+		SourceGPUBytes: SourceGPUBytes,
+		Prompts:        prompts,
 	}
 	metadataBytes, err := json.Marshal(metadata)
 	if err != nil {
@@ -111,10 +112,16 @@ func (w *traceWriter) writePrompt(prompt *promptAccumulator) error {
 	if err := w.writeExpertSlice(prompt.decodeRoutes); err != nil {
 		return err
 	}
+	if err := w.write(prompt.prefillSourceGPUs); err != nil {
+		return err
+	}
+	if err := w.write(prompt.decodeSourceGPUs); err != nil {
+		return err
+	}
 	length := w.offset - start
 	expectedLength, err := promptBlockLength(
 		uint64(prompt.meta.InputTokens), uint64(prompt.meta.DecodeTokens), uint64(prompt.numLayers),
-		uint64(prompt.numExperts), uint64(prompt.topK), uint64(w.expertBytes),
+		uint64(prompt.numExperts), uint64(prompt.topK), uint64(w.expertBytes), uint64(SourceGPUBytes),
 	)
 	if err != nil {
 		return err
