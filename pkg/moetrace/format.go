@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	FormatVersion         uint32 = 1
+	FormatVersion         uint32 = 2\n\tminFormatVersion      uint32 = 1
 	headerSize                   = 112
 	indexEntrySize               = 32
 	promptBlockHeaderSize        = 32
@@ -154,7 +154,7 @@ func readIndexEntry(r io.ReaderAt, offset int64) (indexEntry, error) {
 	}, nil
 }
 
-func promptBlockLength(inputTokens, decodeTokens, numLayers, numExperts, topK, expertBytes uint64) (uint64, error) {
+func promptBlockLength(inputTokens, decodeTokens, numLayers, numExperts, topK, expertBytes uint64, formatVersion uint32) (uint64, error) {
 	inputBytes, err := checkedMul(inputTokens, 4)
 	if err != nil {
 		return 0, err
