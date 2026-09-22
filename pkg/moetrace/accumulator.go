@@ -17,18 +17,18 @@ package moetrace
 import "fmt"
 
 type promptAccumulator struct {
-	meta            PromptMetadata
-	numLayers       int
-	numExperts      int
-	topK            int
-	layerSlots      map[int]int
-	inputTokenIDs   []uint32
-	decodeTokenIDs  []uint32
-	inputTokenSeen  []bool
-	decodeTokenSeen []bool
-	prefillSeen     []bool
-	decodeSeen      []bool
-	prefillCounts   []uint32
+	meta              PromptMetadata
+	numLayers         int
+	numExperts        int
+	topK              int
+	layerSlots        map[int]int
+	inputTokenIDs     []uint32
+	decodeTokenIDs    []uint32
+	inputTokenSeen    []bool
+	decodeTokenSeen   []bool
+	prefillSeen       []bool
+	decodeSeen        []bool
+	prefillCounts     []uint32
 	prefillRoutes     []uint16
 	decodeRoutes      []uint16
 	prefillSourceGPUs []uint8
@@ -51,17 +51,17 @@ func newPromptAccumulator(meta sourcePromptMetadata, source sourceMetadata, laye
 			DecodeTokens:  d,
 			GeneratedText: meta.GeneratedText,
 		},
-		numLayers:       l,
-		numExperts:      source.NumExperts,
-		topK:            k,
-		layerSlots:      layerSlots,
-		inputTokenIDs:   make([]uint32, p),
-		decodeTokenIDs:  make([]uint32, d),
-		inputTokenSeen:  make([]bool, p),
-		decodeTokenSeen: make([]bool, d),
-		prefillSeen:     make([]bool, p*l),
-		decodeSeen:      make([]bool, d*l),
-		prefillCounts:   make([]uint32, l*source.NumExperts),
+		numLayers:         l,
+		numExperts:        source.NumExperts,
+		topK:              k,
+		layerSlots:        layerSlots,
+		inputTokenIDs:     make([]uint32, p),
+		decodeTokenIDs:    make([]uint32, d),
+		inputTokenSeen:    make([]bool, p),
+		decodeTokenSeen:   make([]bool, d),
+		prefillSeen:       make([]bool, p*l),
+		decodeSeen:        make([]bool, d*l),
+		prefillCounts:     make([]uint32, l*source.NumExperts),
 		prefillRoutes:     make([]uint16, l*p*k),
 		decodeRoutes:      make([]uint16, d*l*k),
 		prefillSourceGPUs: filledSourceGPUs(p * l),
@@ -184,7 +184,6 @@ func (p *promptAccumulator) validateComplete() error {
 	}
 	return nil
 }
-
 
 func filledSourceGPUs(length int) []uint8 {
 	values := make([]uint8, length)
