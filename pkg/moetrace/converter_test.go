@@ -15,6 +15,7 @@
 package moetrace
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -57,7 +58,7 @@ func TestConvertAndRead(t *testing.T) {
 		t.Fatalf("Validate() error = %v", err)
 	}
 	metadata := reader.Metadata()
-	if metadata.Model != source.Model || metadata.NumExperts != 4 || metadata.TopK != 2 {
+	if metadata.Model != source.Model || metadata.NumExperts != 4 || metadata.TopK != 2 || metadata.FormatVersion != 2 || metadata.SourceGPUBytes != 1 {
 		t.Fatalf("unexpected metadata: %+v", metadata)
 	}
 
@@ -77,6 +78,13 @@ func TestConvertAndRead(t *testing.T) {
 	}
 	if got, want := experts, []uint16{2, 3}; !equalUint16(got, want) {
 		t.Fatalf("prefill experts = %v, want %v", got, want)
+	}
+	sourceGPU, err := prompt.PrefillSourceGPU(1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sourceGPU != 0 {
+		t.Fatalf("prefill source GPU = %d, want 0", sourceGPU)
 	}
 	experts, err = prompt.DecodeExperts(1, 0)
 	if err != nil {
@@ -149,6 +157,7 @@ func makeTestSource() testSource {
 					TokenID: int64(100 + prompt.Index*10 + position), Layer: layer,
 					Experts:     []int{(position + layerSlot) % 4, (position + layerSlot + 1) % 4},
 					GateWeights: []float64{0.6, 0.4},
+					SourceGPU:   intPtr((position + layerSlot) % 2),
 				})
 			}
 		}
@@ -159,6 +168,7 @@ func makeTestSource() testSource {
 					TokenID: int64(200 + prompt.Index*10 + decode), Layer: layer,
 					Experts:     []int{(decode + layerSlot) % 4, (decode + layerSlot + 1) % 4},
 					GateWeights: []float64{0.7, 0.3},
+					SourceGPU:   intPtr((decode + layerSlot) % 2),
 				})
 			}
 		}
@@ -202,4 +212,176 @@ func equalUint16(a, b []uint16) bool {
 		}
 	}
 	return true
+}
+
+
+func TestConvertV2UsesUnknownSourceGPUWhenMissing(t *testing.T) {
+	source := makeTestSource()
+	source.Trace[0].SourceGPU = nil
+	dir := t.TempDir()
+	input := filepath.Join(dir, "trace.json")
+	output := filepath.Join(dir, "trace.moetrace")
+	writeTestSource(t, input, source)
+
+	if _, err := Convert(input, output, ConvertOptions{}); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+	reader, err := Open(output)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer reader.Close()
+	prompt, err := reader.ReadPrompt(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := prompt.PrefillSourceGPU(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != UnknownSourceGPU {
+		t.Fatalf("source GPU = %d, want %d", got, UnknownSourceGPU)
+	}
+}
+
+func TestConvertV2AcceptsGPUSourceAlias(t *testing.T) {
+	source := makeTestSource()
+	source.Trace[0].SourceGPU = nil
+	source.Trace[0].GPUSource = intPtr(3)
+	dir := t.TempDir()
+	input := filepath.Join(dir, "trace.json")
+	output := filepath.Join(dir, "trace.moetrace")
+	writeTestSource(t, input, source)
+
+	if _, err := Convert(input, output, ConvertOptions{}); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+	reader, err := Open(output)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer reader.Close()
+	prompt, err := reader.ReadPrompt(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := prompt.PrefillSourceGPU(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 3 {
+		t.Fatalf("source GPU = %d, want 3", got)
+	}
+}
+
+func TestConvertV2RejectsSourceGPUAbove127(t *testing.T) {
+	source := makeTestSource()
+	source.Trace[0].SourceGPU = intPtr(128)
+	dir := t.TempDir()
+	input := filepath.Join(dir, "trace.json")
+	output := filepath.Join(dir, "trace.moetrace")
+	writeTestSource(t, input, source)
+
+	_, err := Convert(input, output, ConvertOptions{})
+	if err == nil || !strings.Contains(err.Error(), "supported range [0,127]") {
+		t.Fatalf("Convert() error = %v, want source GPU range error", err)
+	}
+}
+
+func TestOpenReadsVersion1Trace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legacy.moetrace")
+	writeVersion1TestTrace(t, path)
+
+	reader, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer reader.Close()
+	if reader.Metadata().FormatVersion != 1 || reader.Metadata().SourceGPUBytes != 0 {
+		t.Fatalf("unexpected v1 metadata: %+v", reader.Metadata())
+	}
+	prompt, err := reader.ReadPrompt(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prompt.PrefillSourceGPUs) != 0 || len(prompt.DecodeSourceGPUs) != 0 {
+		t.Fatalf("v1 trace unexpectedly contains source GPU data")
+	}
+}
+
+func writeVersion1TestTrace(t *testing.T, path string) {
+	t.Helper()
+	metadata := Metadata{
+		FormatVersion: 1,
+		Model: "legacy/moe",
+		NumExperts: 4,
+		TopK: 2,
+		SparseLayers: []int{1},
+		NumPrompts: 1,
+		ExpertIDBytes: 1,
+		Prompts: []PromptMetadata{{Index: 0, InputTokens: 1, DecodeTokens: 1}},
+	}
+	metadataBytes, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := make([]byte, promptBlockHeaderSize)
+	binary.LittleEndian.PutUint32(prompt[4:8], 1)
+	binary.LittleEndian.PutUint32(prompt[8:12], 1)
+	binary.LittleEndian.PutUint32(prompt[12:16], 1)
+	binary.LittleEndian.PutUint32(prompt[16:20], 4)
+	binary.LittleEndian.PutUint32(prompt[20:24], 2)
+	binary.LittleEndian.PutUint32(prompt[24:28], 1)
+	appendUint32 := func(value uint32) {
+		buf := make([]byte, 4)
+		binary.LittleEndian.PutUint32(buf, value)
+		prompt = append(prompt, buf...)
+	}
+	appendUint32(11)
+	appendUint32(12)
+	for _, value := range []uint32{1, 1, 0, 0} {
+		appendUint32(value)
+	}
+	prompt = append(prompt, 0, 1, 2, 3)
+
+	metadataOffset := uint64(headerSize)
+	dataOffset := metadataOffset + uint64(len(metadataBytes))
+	indexOffset := dataOffset + uint64(len(prompt))
+	header := fileHeader{
+		Version: 1,
+		MetadataOffset: metadataOffset,
+		MetadataLength: uint64(len(metadataBytes)),
+		DataOffset: dataOffset,
+		IndexOffset: indexOffset,
+		IndexLength: indexEntrySize,
+		NumPrompts: 1,
+		ExpertIDBytes: 1,
+	}
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := writeHeader(file, header); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(metadataBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(prompt); err != nil {
+		t.Fatal(err)
+	}
+	index := make([]byte, indexEntrySize)
+	binary.LittleEndian.PutUint64(index[8:16], dataOffset)
+	binary.LittleEndian.PutUint64(index[16:24], uint64(len(prompt)))
+	binary.LittleEndian.PutUint32(index[24:28], 1)
+	binary.LittleEndian.PutUint32(index[28:32], 1)
+	if _, err := file.Write(index); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func intPtr(value int) *int {
+	return &value
 }
