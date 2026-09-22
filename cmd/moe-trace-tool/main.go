@@ -122,6 +122,7 @@ func runInspect(args []string) error {
 	fmt.Printf("Logical experts:  %d\n", metadata.NumExperts)
 	fmt.Printf("Top-k:            %d\n", metadata.TopK)
 	fmt.Printf("Expert ID bytes:  %d\n", metadata.ExpertIDBytes)
+	fmt.Printf("Source GPU bytes: %d\n", metadata.SourceGPUBytes)
 	fmt.Printf("Source bytes:     %d\n", reader.SourceSize())
 	fmt.Printf("File bytes:       %d\n", reader.FileSize())
 	fmt.Printf("Source SHA-256:   %s\n", reader.SourceSHA256())
@@ -138,6 +139,10 @@ func runInspect(args []string) error {
 		fmt.Printf("Generated text:   %s\n", prompt.Metadata.GeneratedText)
 		fmt.Printf("Input token IDs:  %v\n", prefix(prompt.InputTokenIDs, 16))
 		fmt.Printf("Decode token IDs: %v\n", prefix(prompt.DecodeTokenIDs, 16))
+		if metadata.SourceGPUBytes != 0 {
+			fmt.Printf("Prefill source GPUs: %v\n", prefixUint8(prompt.PrefillSourceGPUs, 16))
+			fmt.Printf("Decode source GPUs:  %v\n", prefixUint8(prompt.DecodeSourceGPUs, 16))
+		}
 	}
 	return nil
 }
@@ -165,6 +170,13 @@ func runValidate(args []string) error {
 }
 
 func prefix(values []uint32, maxValues int) []uint32 {
+	if len(values) <= maxValues {
+		return values
+	}
+	return values[:maxValues]
+}
+
+func prefixUint8(values []uint8, maxValues int) []uint8 {
 	if len(values) <= maxValues {
 		return values
 	}
