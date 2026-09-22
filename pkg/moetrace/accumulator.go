@@ -14,7 +14,7 @@
 
 package moetrace
 
-import "fmt"
+import (\n\t"fmt"\n\t"math"\n)
 
 type promptAccumulator struct {
 	meta            PromptMetadata
@@ -174,3 +174,4 @@ func (p *promptAccumulator) validateComplete() error {
 	}
 	return nil
 }
+\nfunc filledUint32(size int, value uint32) []uint32 {\n\tvalues := make([]uint32, size)\n\tfor i := range values {\n\t\tvalues[i] = value\n\t}\n\treturn values\n}\n
