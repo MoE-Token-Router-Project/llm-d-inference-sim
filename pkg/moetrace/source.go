@@ -36,6 +36,25 @@ type sourceTraceRecord struct {
 	Layer       int       `json:"layer"`
 	Experts     []int     `json:"experts"`
 	GateWeights []float64 `json:"gate_weights"`
+	SourceGPU   *int      `json:"source_gpu"`
+	GPUSource   *int      `json:"gpu_source"`
+}
+
+func (r sourceTraceRecord) sourceGPU() (uint8, error) {
+	if r.SourceGPU != nil && r.GPUSource != nil && *r.SourceGPU != *r.GPUSource {
+		return 0, fmt.Errorf("source_gpu %d conflicts with gpu_source %d", *r.SourceGPU, *r.GPUSource)
+	}
+	value := r.SourceGPU
+	if value == nil {
+		value = r.GPUSource
+	}
+	if value == nil {
+		return UnknownSourceGPU, nil
+	}
+	if *value < 0 || *value > int(MaxSourceGPU) {
+		return 0, fmt.Errorf("source GPU %d is outside supported range [0,%d]", *value, MaxSourceGPU)
+	}
+	return uint8(*value), nil
 }
 
 type sourceMetadata struct {
