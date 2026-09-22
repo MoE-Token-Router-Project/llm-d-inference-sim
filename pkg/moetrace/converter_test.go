@@ -214,7 +214,6 @@ func equalUint16(a, b []uint16) bool {
 	return true
 }
 
-
 func TestConvertV2UsesUnknownSourceGPUWhenMissing(t *testing.T) {
 	source := makeTestSource()
 	source.Trace[0].SourceGPU = nil
@@ -314,13 +313,13 @@ func writeVersion1TestTrace(t *testing.T, path string) {
 	t.Helper()
 	metadata := Metadata{
 		FormatVersion: 1,
-		Model: "legacy/moe",
-		NumExperts: 4,
-		TopK: 2,
-		SparseLayers: []int{1},
-		NumPrompts: 1,
-		ExpertIDBytes: 1,
-		Prompts: []PromptMetadata{{Index: 0, InputTokens: 1, DecodeTokens: 1}},
+		Model:          "legacy/moe",
+		NumExperts:     4,
+		TopK:           2,
+		SparseLayers:   []int{1},
+		NumPrompts:     1,
+		ExpertIDBytes:  1,
+		Prompts:        []PromptMetadata{{Index: 0, InputTokens: 1, DecodeTokens: 1}},
 	}
 	metadataBytes, err := json.Marshal(metadata)
 	if err != nil {
@@ -349,14 +348,14 @@ func writeVersion1TestTrace(t *testing.T, path string) {
 	dataOffset := metadataOffset + uint64(len(metadataBytes))
 	indexOffset := dataOffset + uint64(len(prompt))
 	header := fileHeader{
-		Version: 1,
+		Version:        1,
 		MetadataOffset: metadataOffset,
 		MetadataLength: uint64(len(metadataBytes)),
-		DataOffset: dataOffset,
-		IndexOffset: indexOffset,
-		IndexLength: indexEntrySize,
-		NumPrompts: 1,
-		ExpertIDBytes: 1,
+		DataOffset:     dataOffset,
+		IndexOffset:    indexOffset,
+		IndexLength:    indexEntrySize,
+		NumPrompts:     1,
+		ExpertIDBytes:  1,
 	}
 	file, err := os.Create(path)
 	if err != nil {
