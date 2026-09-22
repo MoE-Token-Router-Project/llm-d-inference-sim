@@ -66,14 +66,26 @@ bin/moe-trace-tool validate --input instructcoder_2000_both.moetrace
 
 ## Binary layout
 
-Version 1 stores a fixed header, JSON metadata, contiguous prompt data blocks,
-and a fixed-size prompt index. Each prompt block stores:
+The tool writes version 2 while the reader accepts versions 1 and 2. Both
+versions keep the `MOETRC01` magic, fixed header, JSON metadata, contiguous
+prompt data blocks, and fixed-size prompt index. Version 2 keeps the complete
+version 1 payload and appends source-GPU data to every prompt block.
+
+Each prompt block stores:
 
 - input token IDs
 - decode token IDs
 - precomputed prefill expert counts as `[sparse_layer][logical_expert]`
 - prefill routes as `[sparse_layer][position][top_k]`
 - decode routes as `[decode_position][sparse_layer][top_k]`
+- version 2 prefill source GPUs as `[sparse_layer][position]`
+- version 2 decode source GPUs as `[decode_position][sparse_layer]`
+
+Source GPU IDs use one byte. Values 0 through 127 are physical GPU IDs, 255
+means unknown or not recorded, and 128 through 254 are invalid. Version 2
+metadata records `source_gpu_bytes: 1`. The JSON converter accepts
+`source_gpu` on each trace record and also accepts `gpu_source` as an alias;
+if neither is present it writes 255.
 
 Expert IDs use one byte when the trace has at most 256 logical experts and two
 bytes otherwise. Prompt text and generated text are retained in metadata.
