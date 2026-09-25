@@ -33,15 +33,19 @@ type Reader struct {
 }
 
 type PromptData struct {
-	Metadata       PromptMetadata
-	InputTokenIDs  []uint32
-	DecodeTokenIDs []uint32
-	PrefillCounts  []uint32
-	PrefillRoutes  []uint16
-	DecodeRoutes   []uint16
-	numLayers      int
-	numExperts     int
-	topK           int
+	Metadata          PromptMetadata
+	InputTokenIDs     []uint32
+	DecodeTokenIDs    []uint32
+	PrefillCounts     []uint32
+	PrefillRoutes     []uint16
+	DecodeRoutes      []uint16
+	PrefillSourceGPUs []uint8
+	DecodeSourceGPUs  []uint8
+	numLayers         int
+	numExperts        int
+	topK              int
+	formatVersion     uint32
+	sourceGPUBytes    int
 }
 
 func Open(path string) (*Reader, error) {
@@ -91,8 +95,13 @@ func Open(path string) (*Reader, error) {
 	if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
 		return nil, fmt.Errorf("decode metadata: %w", err)
 	}
-	if metadata.FormatVersion != FormatVersion || metadata.NumPrompts != int(h.NumPrompts) || metadata.ExpertIDBytes != int(h.ExpertIDBytes) {
+	if metadata.FormatVersion != h.Version || metadata.NumPrompts != int(h.NumPrompts) || metadata.ExpertIDBytes != int(h.ExpertIDBytes) {
 		return nil, errors.New("metadata does not match file header")
+	}
+	if h.Version == FormatVersion {
+		metadata.SourceGPUBytes = 0
+	} else if metadata.SourceGPUBytes != sourceGPUBytes {
+		return nil, fmt.Errorf("unsupported source GPU width %d", metadata.SourceGPUBytes)
 	}
 	if len(metadata.Prompts) != metadata.NumPrompts || len(metadata.SparseLayers) == 0 {
 		return nil, errors.New("invalid MoE trace metadata")
@@ -177,7 +186,10 @@ func (r *Reader) Validate() error {
 		if int(numLayers) != len(r.metadata.SparseLayers) || int(numExperts) != r.metadata.NumExperts || int(topK) != r.metadata.TopK || int(expertBytes) != r.metadata.ExpertIDBytes {
 			return fmt.Errorf("prompt %d block dimensions do not match metadata", i)
 		}
-		expectedLength, err := promptBlockLength(uint64(inputTokens), uint64(decodeTokens), uint64(numLayers), uint64(numExperts), uint64(topK), uint64(expertBytes))
+		expectedLength, err := promptBlockLengthForVersion(
+			uint64(inputTokens), uint64(decodeTokens), uint64(numLayers), uint64(numExperts),
+			uint64(topK), uint64(expertBytes), r.header.Version, uint64(r.metadata.SourceGPUBytes),
+		)
 		if err != nil {
 			return err
 		}
@@ -214,6 +226,12 @@ func (r *Reader) ReadPrompt(promptID int) (*PromptData, error) {
 		numLayers:      len(r.metadata.SparseLayers),
 		numExperts:     r.metadata.NumExperts,
 		topK:           r.metadata.TopK,
+		formatVersion:  r.header.Version,
+		sourceGPUBytes: r.metadata.SourceGPUBytes,
+	}
+	if r.header.Version >= 2 {
+		p.PrefillSourceGPUs = make([]uint8, len(r.metadata.SparseLayers)*int(entry.InputTokens))
+		p.DecodeSourceGPUs = make([]uint8, int(entry.DecodeTokens)*len(r.metadata.SparseLayers))
 	}
 	if err := readUint32Slice(section, p.InputTokenIDs); err != nil {
 		return nil, fmt.Errorf("read prompt %d input tokens: %w", promptID, err)
@@ -229,6 +247,20 @@ func (r *Reader) ReadPrompt(promptID int) (*PromptData, error) {
 	}
 	if err := readExpertSlice(section, p.DecodeRoutes, r.metadata.ExpertIDBytes); err != nil {
 		return nil, fmt.Errorf("read prompt %d decode routes: %w", promptID, err)
+	}
+	if r.header.Version >= 2 {
+		if _, err := io.ReadFull(section, p.PrefillSourceGPUs); err != nil {
+			return nil, fmt.Errorf("read prompt %d prefill source GPUs: %w", promptID, err)
+		}
+		if _, err := io.ReadFull(section, p.DecodeSourceGPUs); err != nil {
+			return nil, fmt.Errorf("read prompt %d decode source GPUs: %w", promptID, err)
+		}
+		if err := validateSourceGPUs(p.PrefillSourceGPUs); err != nil {
+			return nil, fmt.Errorf("prompt %d prefill source GPUs: %w", promptID, err)
+		}
+		if err := validateSourceGPUs(p.DecodeSourceGPUs); err != nil {
+			return nil, fmt.Errorf("prompt %d decode source GPUs: %w", promptID, err)
+		}
 	}
 	position, err := section.Seek(0, io.SeekCurrent)
 	if err != nil {
@@ -261,6 +293,47 @@ func (p *PromptData) DecodeExperts(position, layerSlot int) ([]uint16, error) {
 	}
 	base := (position*p.numLayers + layerSlot) * p.topK
 	return p.DecodeRoutes[base : base+p.topK], nil
+}
+
+
+func (p *PromptData) PrefillSourceGPU(layerSlot, position int) (int, bool, error) {
+	if layerSlot < 0 || layerSlot >= p.numLayers || position < 0 || position >= len(p.InputTokenIDs) {
+		return 0, false, errors.New("prefill source GPU index out of range")
+	}
+	if p.formatVersion < 2 || len(p.PrefillSourceGPUs) == 0 {
+		return 0, false, nil
+	}
+	value := p.PrefillSourceGPUs[layerSlot*len(p.InputTokenIDs)+position]
+	if value == unknownSourceGPU {
+		return 0, false, nil
+	}
+	return int(value), true, nil
+}
+
+func (p *PromptData) DecodeSourceGPU(position, layerSlot int) (int, bool, error) {
+	if position < 0 || position >= len(p.DecodeTokenIDs) || layerSlot < 0 || layerSlot >= p.numLayers {
+		return 0, false, errors.New("decode source GPU index out of range")
+	}
+	if p.formatVersion < 2 || len(p.DecodeSourceGPUs) == 0 {
+		return 0, false, nil
+	}
+	value := p.DecodeSourceGPUs[position*p.numLayers+layerSlot]
+	if value == unknownSourceGPU {
+		return 0, false, nil
+	}
+	return int(value), true, nil
+}
+
+func validateSourceGPUs(values []uint8) error {
+	for _, value := range values {
+		if value == unknownSourceGPU {
+			continue
+		}
+		if value > maxSourceGPU {
+			return fmt.Errorf("source GPU %d is outside supported range [0,%d]", value, maxSourceGPU)
+		}
+	}
+	return nil
 }
 
 func validateRegion(offset, length, fileSize uint64, name string) error {
