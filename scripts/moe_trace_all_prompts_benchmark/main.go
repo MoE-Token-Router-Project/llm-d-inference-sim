@@ -39,16 +39,16 @@ import (
 )
 
 const (
-	maxErrorBodyBytes          = 64 << 10
+	maxErrorBodyBytes         = 64 << 10
 	defaultMaxHTTPConnections = 512
 )
 
 type options struct {
-	tracePath      string
-	baseURL        string
-	model          string
-	outputDir      string
-	label          string
+	tracePath             string
+	baseURL               string
+	model                 string
+	outputDir             string
+	label                 string
 	requestTimeout        time.Duration
 	progressEvery         int
 	maxHTTPConnections    int
@@ -56,26 +56,26 @@ type options struct {
 }
 
 type serverConfig struct {
-	Model                      string  `json:"model"`
-	MaxNumSeqs                 int     `json:"max-num-seqs"`
-	MaxWaitingQueueLength      int     `json:"max-waiting-queue-length"`
-	MaxModelLen                int     `json:"max-model-len"`
-	EnableMoE                  bool    `json:"enable-moe"`
-	MoEExpertParallelSize      int     `json:"moe-expert-parallel-size"`
-	MoENumExperts              int     `json:"moe-num-experts"`
-	MoEPhysicalExpertSlots     int     `json:"moe-physical-expert-slots"`
-	MoETopK                    int     `json:"moe-top-k"`
-	MoENumLayers               int     `json:"moe-num-layers"`
-	MoERouter                  string  `json:"moe-router"`
-	UseDistributedRouting      bool    `json:"use-distributed-routing"`
-	MoEExpertPopularityAlpha   float64 `json:"moe-expert-popularity-alpha"`
-	MoEHiddenSize              int     `json:"moe-hidden-size"`
-	MoEIntermediateSize        int     `json:"moe-intermediate-size"`
-	MoEBytesPerElement         int     `json:"moe-bytes-per-element"`
-	MoEGPUFlops                float64 `json:"moe-gpu-flops"`
-	MoEGPUMemoryBandwidth      float64 `json:"moe-gpu-memory-bandwidth"`
-	MoEInterconnectBandwidth   float64 `json:"moe-interconnect-bandwidth"`
-	MoEInterconnectLatency     string  `json:"moe-interconnect-latency"`
+	Model                    string  `json:"model"`
+	MaxNumSeqs               int     `json:"max-num-seqs"`
+	MaxWaitingQueueLength    int     `json:"max-waiting-queue-length"`
+	MaxModelLen              int     `json:"max-model-len"`
+	EnableMoE                bool    `json:"enable-moe"`
+	MoEExpertParallelSize    int     `json:"moe-expert-parallel-size"`
+	MoENumExperts            int     `json:"moe-num-experts"`
+	MoEPhysicalExpertSlots   int     `json:"moe-physical-expert-slots"`
+	MoETopK                  int     `json:"moe-top-k"`
+	MoENumLayers             int     `json:"moe-num-layers"`
+	MoERouter                string  `json:"moe-router"`
+	UseDistributedRouting    bool    `json:"use-distributed-routing"`
+	MoEExpertPopularityAlpha float64 `json:"moe-expert-popularity-alpha"`
+	MoEHiddenSize            int     `json:"moe-hidden-size"`
+	MoEIntermediateSize      int     `json:"moe-intermediate-size"`
+	MoEBytesPerElement       int     `json:"moe-bytes-per-element"`
+	MoEGPUFlops              float64 `json:"moe-gpu-flops"`
+	MoEGPUMemoryBandwidth    float64 `json:"moe-gpu-memory-bandwidth"`
+	MoEInterconnectBandwidth float64 `json:"moe-interconnect-bandwidth"`
+	MoEInterconnectLatency   string  `json:"moe-interconnect-latency"`
 }
 
 type traceSummary struct {
@@ -98,7 +98,7 @@ type tokenCounts struct {
 }
 
 type throughput struct {
-	RequestsPerSecond    float64 `json:"requests_per_second"`
+	RequestsPerSecond     float64 `json:"requests_per_second"`
 	OutputTokensPerSecond float64 `json:"output_tokens_per_second"`
 	TotalTokensPerSecond  float64 `json:"total_tokens_per_second"`
 }
@@ -120,29 +120,29 @@ type failureExample struct {
 }
 
 type benchmarkSummary struct {
-	Label                     string           `json:"label,omitempty"`
-	StartedAt                 string           `json:"started_at"`
-	BaseURL                   string           `json:"base_url"`
-	Endpoint                  string           `json:"endpoint"`
-	LaunchMode                string           `json:"launch_mode"`
-	Trace                     traceSummary     `json:"trace"`
-	Server                    serverConfig     `json:"server"`
-	Requested                 int              `json:"requested"`
-	Successful                int              `json:"successful"`
-	Failed                    int              `json:"failed"`
-	WallTimeSeconds           float64          `json:"wall_time_seconds"`
-	TokenCounts               tokenCounts      `json:"token_counts"`
-	Throughput                throughput       `json:"throughput"`
-	RequestLatencySeconds     distribution     `json:"request_latency_seconds"`
-	TTFTMilliseconds          distribution     `json:"ttft_milliseconds"`
-	TPOTMilliseconds          distribution     `json:"tpot_milliseconds"`
-	StreamingITLMilliseconds  distribution     `json:"streaming_itl_milliseconds"`
-	PrefillMilliseconds       distribution     `json:"prefill_milliseconds"`
-	DecodeMilliseconds        distribution     `json:"decode_milliseconds"`
-	E2EMilliseconds           distribution     `json:"e2e_milliseconds"`
-	OutputLengthTokens        distribution     `json:"output_length_tokens"`
-	LaunchStartOffsetMS       distribution     `json:"launch_start_offset_milliseconds"`
-	FailureExamples           []failureExample `json:"failure_examples,omitempty"`
+	Label                    string           `json:"label,omitempty"`
+	StartedAt                string           `json:"started_at"`
+	BaseURL                  string           `json:"base_url"`
+	Endpoint                 string           `json:"endpoint"`
+	LaunchMode               string           `json:"launch_mode"`
+	Trace                    traceSummary     `json:"trace"`
+	Server                   serverConfig     `json:"server"`
+	Requested                int              `json:"requested"`
+	Successful               int              `json:"successful"`
+	Failed                   int              `json:"failed"`
+	WallTimeSeconds          float64          `json:"wall_time_seconds"`
+	TokenCounts              tokenCounts      `json:"token_counts"`
+	Throughput               throughput       `json:"throughput"`
+	RequestLatencySeconds    distribution     `json:"request_latency_seconds"`
+	TTFTMilliseconds         distribution     `json:"ttft_milliseconds"`
+	TPOTMilliseconds         distribution     `json:"tpot_milliseconds"`
+	StreamingITLMilliseconds distribution     `json:"streaming_itl_milliseconds"`
+	PrefillMilliseconds      distribution     `json:"prefill_milliseconds"`
+	DecodeMilliseconds       distribution     `json:"decode_milliseconds"`
+	E2EMilliseconds          distribution     `json:"e2e_milliseconds"`
+	OutputLengthTokens       distribution     `json:"output_length_tokens"`
+	LaunchStartOffsetMS      distribution     `json:"launch_start_offset_milliseconds"`
+	FailureExamples          []failureExample `json:"failure_examples,omitempty"`
 }
 
 type requestResult struct {
@@ -624,16 +624,16 @@ func summarize(opts options, endpoint string, trace traceSummary, server serverC
 	}
 
 	return benchmarkSummary{
-		Label:        opts.label,
-		StartedAt:    startedAt.Format(time.RFC3339Nano),
-		BaseURL:      strings.TrimRight(opts.baseURL, "/"),
-		Endpoint:     endpoint,
-		LaunchMode:   "all-prompts-at-once",
-		Trace:        trace,
-		Server:       server,
-		Requested:    len(results),
-		Successful:   successful,
-		Failed:       len(results) - successful,
+		Label:           opts.label,
+		StartedAt:       startedAt.Format(time.RFC3339Nano),
+		BaseURL:         strings.TrimRight(opts.baseURL, "/"),
+		Endpoint:        endpoint,
+		LaunchMode:      "all-prompts-at-once",
+		Trace:           trace,
+		Server:          server,
+		Requested:       len(results),
+		Successful:      successful,
+		Failed:          len(results) - successful,
 		WallTimeSeconds: wallSeconds,
 		TokenCounts: tokenCounts{
 			PromptTokens: promptTokens,
