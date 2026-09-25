@@ -66,9 +66,9 @@ type fixedPlacementFile struct {
 }
 
 type traceRoutingState struct {
-	expertLoads          []map[int]float64
-	loads                []float64
-	sourceToDestination  [][]float64
+	expertLoads         []map[int]float64
+	loads               []float64
+	sourceToDestination [][]float64
 }
 
 type tracePrefillJob struct {
@@ -630,15 +630,15 @@ type traceGPUExecution struct {
 }
 
 type traceLayerExecution struct {
-	layer               int
-	routerStarted       time.Time
-	routerDuration      time.Duration
-	routerDurations     []time.Duration
-	aggregatorDuration  time.Duration
-	dispatch            time.Duration
-	combine             time.Duration
-	gpus                []traceGPUExecution
-	duration            time.Duration
+	layer              int
+	routerStarted      time.Time
+	routerDuration     time.Duration
+	routerDurations    []time.Duration
+	aggregatorDuration time.Duration
+	dispatch           time.Duration
+	combine            time.Duration
+	gpus               []traceGPUExecution
+	duration           time.Duration
 }
 
 func (l traceLayerExecution) routerWallDuration() time.Duration {
