@@ -170,6 +170,7 @@ func ParseCommandParamsAndLoadConfig() (*Configuration, error) {
 	f.IntVar(&config.MoETopK, "moe-top-k", config.MoETopK, "Number of experts selected per token")
 	f.IntVar(&config.MoENumLayers, "moe-num-layers", config.MoENumLayers, "Number of MoE layers included in the latency model")
 	f.StringVar(&config.MoERouter, "moe-router", config.MoERouter, "Expert replica router: split, concentrate, or heuristic")
+	f.BoolVar(&config.UseDistributedRouting, "use-distributed-routing", config.UseDistributedRouting, "Run one independent MoE token router per source GPU and aggregate their destination assignments")
 	f.Float64Var(&config.MoEExpertPopularityAlpha, "moe-expert-popularity-alpha", config.MoEExpertPopularityAlpha, "Power-law alpha for synthetic logical-expert popularity")
 	f.IntVar(&config.MoEHiddenSize, "moe-hidden-size", config.MoEHiddenSize, "MoE model hidden dimension")
 	f.IntVar(&config.MoEIntermediateSize, "moe-intermediate-size", config.MoEIntermediateSize, "MoE expert intermediate dimension")
