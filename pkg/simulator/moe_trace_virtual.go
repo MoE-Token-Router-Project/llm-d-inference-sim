@@ -53,7 +53,7 @@ type MoETraceVirtualResult struct {
 	OutputTokens          int
 	DecodeForwards        int
 	Steps                 int
-	PrefillSteps           int
+	PrefillSteps          int
 	DecodeOnlySteps       int
 	MixedSteps            int
 	ModeledTime           time.Duration
