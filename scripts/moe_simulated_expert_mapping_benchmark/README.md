@@ -4,6 +4,118 @@ This benchmark sends normal streaming chat-completion requests to the simulator.
 
 The benchmark keeps the measurement definitions used by `scripts/moe_trace_all_prompts_benchmark`. It reports request throughput, output-token throughput, total-token throughput, request latency, TTFT, TPOT, streaming ITL, prefill time, decode time, E2E time, output length, and request launch offsets. Prompt and completion token counts come from the streaming usage chunk requested with `stream_options.include_usage=true`.
 
+## End-to-end pipeline
+
+The benchmark is a three-process-step workflow:
+
+1. **Prepare a local JSONL dataset.** Download prompt rows from Hugging Face with `download_dataset.py`, or provide an existing file in the benchmark JSONL format.
+2. **Start `llm-d-inference-sim`.** The benchmark does not start the simulator. Start the server first with the MoE/router configuration you want to measure.
+3. **Run the benchmark client.** `run.sh` reads the local dataset and sends the selected prompts to the already-running simulator over `/v1/chat/completions`.
+
+A complete example is shown below.
+
+### 1. Download/prepare the dataset
+
+Install the Hugging Face dataset dependency once:
+
+```bash
+python3 -m pip install datasets
+```
+
+For GSM8K:
+
+```bash
+python3 scripts/moe_simulated_expert_mapping_benchmark/download_dataset.py \
+  --dataset openai/gsm8k \
+  --dataset-config main \
+  --split train \
+  --prompt-field question \
+  --limit 2000 \
+  --max-completion-tokens 128 \
+  --output datasets/gsm8k_2000.jsonl
+```
+
+This produces the local file consumed by the benchmark client. If you already have a normalized JSONL dataset, this download step can be skipped.
+
+### 2. Build and start the simulator
+
+Build the current branch:
+
+```bash
+make build
+```
+
+For the distributed heuristic router used in the examples in this directory:
+
+```bash
+ulimit -n 8192
+
+./bin/llm-d-inference-sim \
+  --model Qwen/Qwen1.5-MoE-A2.7B \
+  --port 8000 \
+  --enable-moe \
+  --moe-expert-parallel-size 8 \
+  --moe-num-experts 60 \
+  --moe-physical-expert-slots 80 \
+  --moe-top-k 4 \
+  --moe-num-layers 24 \
+  --moe-router heuristic \
+  --use-distributed-routing \
+  --moe-hidden-size 2048 \
+  --moe-intermediate-size 1408 \
+  --moe-bytes-per-element 2 \
+  --moe-gpu-flops 312e12 \
+  --moe-gpu-memory-bandwidth 2e12 \
+  --moe-interconnect-bandwidth 400e9 \
+  --moe-interconnect-latency 5us \
+  --max-model-len 16384 \
+  --max-num-seqs 32 \
+  --max-waiting-queue-length 2000 \
+  --time-to-first-token 0 \
+  --inter-token-latency 0
+```
+
+Keep this process running in its own terminal. Before starting the benchmark, verify that the client can reach the expected simulator and that distributed routing is enabled:
+
+```bash
+curl -s http://127.0.0.1:8000/health
+curl -s http://127.0.0.1:8000/admin/config | jq '{
+  router: ."moe-router",
+  distributed: ."use-distributed-routing"
+}'
+```
+
+For the command above, the second command should report `"router": "heuristic"` and `"distributed": true`.
+
+### 3. Send the benchmark requests
+
+In a second terminal:
+
+```bash
+./scripts/moe_simulated_expert_mapping_benchmark/run.sh \
+  --dataset datasets/gsm8k_2000.jsonl \
+  --base-url http://127.0.0.1:8000 \
+  --output-dir results/simulated-expert-mapping-heuristic \
+  --label heuristic \
+  --use-distributed-routing
+```
+
+The benchmark performs `/health` and `/admin/config` preflight checks, then releases one client goroutine per selected prompt and sends streaming chat-completion requests to the simulator. The simulator admits up to `--max-num-seqs` active requests and queues the rest up to `--max-waiting-queue-length`.
+
+On macOS, a 2000-request all-at-once burst can exceed local TCP/socket limits even when the file-descriptor limit is raised. If you see `connection reset by peer` errors, first confirm the setup with a smaller burst such as:
+
+```bash
+./scripts/moe_simulated_expert_mapping_benchmark/run.sh \
+  --dataset datasets/gsm8k_2000.jsonl \
+  --limit 1000 \
+  --base-url http://127.0.0.1:8000 \
+  --output-dir results/simulated-expert-mapping-heuristic-1000 \
+  --label heuristic \
+  --use-distributed-routing
+```
+
+The wrapper raises its own open-file limit when possible; the simulator is a separate process, so its shell must have an adequate `ulimit -n` as well.
+
 ## Dataset format
 
 The input is newline-delimited JSON. Each non-empty line must contain a `prompt` string and can set a row-specific `max_completion_tokens` value:
@@ -15,7 +127,7 @@ The input is newline-delimited JSON. Each non-empty line must contain a `prompt`
 
 Rows that omit `max_completion_tokens` use the command-line `--max-completion-tokens` value, which defaults to 128. Downloaded datasets belong under the repository-level `datasets/` directory. That directory is already ignored by git.
 
-## Download from Hugging Face
+## Dataset download reference
 
 The helper uses the Hugging Face `datasets` Python package in streaming mode, so it can select a small benchmark subset without first saving the full source dataset locally.
 
@@ -33,7 +145,7 @@ python3 scripts/moe_simulated_expert_mapping_benchmark/download_dataset.py \
 
 The prompt field can use dot notation for nested records. If the source dataset already contains a positive integer output-token limit, pass it with `--max-completion-tokens-field FIELD`; otherwise the helper writes the constant from `--max-completion-tokens`.
 
-## Run the benchmark
+## Benchmark client reference
 
 Start the simulator with MoE simulation enabled and with the router and hardware settings you want to measure. No MoE trace file is required for this benchmark. The simulator should have enough `max-num-seqs` and `max-waiting-queue-length` capacity for the number of requests you plan to launch.
 
