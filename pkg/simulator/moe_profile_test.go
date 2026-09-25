@@ -252,6 +252,52 @@ func TestMoEProfileRecorderTimelineMatchesExecution(t *testing.T) {
 	}
 }
 
+func TestDistributedRoutersShareGPUOperationTracks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profile.trace.json")
+	recorder, err := newMoEProfileRecorder(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := recorder.origin.Add(time.Millisecond)
+	recorder.recordExecution(base, base, traceModelExecution{layers: []traceLayerExecution{{
+		layer:              0,
+		routerDurations:    []time.Duration{5 * time.Microsecond, 8 * time.Microsecond},
+		aggregatorDuration: 3 * time.Microsecond,
+		dispatch:           4 * time.Microsecond,
+		combine:            2 * time.Microsecond,
+		gpus: []traceGPUExecution{
+			{gpu: 0, duration: 12 * time.Microsecond},
+			{gpu: 1, duration: 10 * time.Microsecond},
+		},
+	}}})
+
+	startUS := durationMicros(base.Sub(recorder.origin))
+	routerSeen := make(map[int]chromeTraceEvent)
+	var aggregator chromeTraceEvent
+	for _, event := range recorder.events {
+		switch {
+		case event.Name == "MoE Router" && event.Ph == "X":
+			routerSeen[event.Tid] = event
+		case event.Name == "Routing aggregator" && event.Ph == "X":
+			aggregator = event
+		}
+	}
+	for gpu, wantDuration := range []float64{5, 8} {
+		tid := profileTIDGPUBase + gpu*10
+		event, ok := routerSeen[tid]
+		if !ok {
+			t.Fatalf("missing router event on GPU %d operation track", gpu)
+		}
+		if event.Ts != startUS || event.Dur != wantDuration {
+			t.Fatalf("GPU %d router ts=%v dur=%v, want ts=%v dur=%v",
+				gpu, event.Ts, event.Dur, startUS, wantDuration)
+		}
+	}
+	if aggregator.Tid != profileTIDAggregator || aggregator.Ts != startUS+8 || aggregator.Dur != 3 {
+		t.Fatalf("aggregator event=%+v, want start after slowest router", aggregator)
+	}
+}
+
 func TestMoEProfileFlowEndpointsFallInsideIntendedSlices(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "profile.trace.json")
 	recorder, err := newMoEProfileRecorder(path)
