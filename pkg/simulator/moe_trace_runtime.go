@@ -313,13 +313,17 @@ func (r *traceActiveRegistry) advance(requestID string) {
 	}
 }
 
-func (r *traceActiveRegistry) decodeCountsLocked(m *moeSimulator, runningReqs int64) (moeLayerCounts, map[string]struct{}, bool) {
+func (r *traceActiveRegistry) decodeCountsLocked(m *moeSimulator, runningReqs int64) (moeLayerCounts, map[string]struct{}, [][]traceProfileTokenAssignment, bool) {
 	if len(r.requests) == 0 {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 
 	counts := newMoELayerCounts(m.numLayers, m.numExperts)
 	participants := make(map[string]struct{}, len(r.requests))
+	var profileAssignments [][]traceProfileTokenAssignment
+	if m.useDistributedRouting || traceFidelityFor(m).profiler != nil {
+		profileAssignments = make([][]traceProfileTokenAssignment, m.numLayers)
+	}
 	activeTraceTokens := 0
 	for requestID, state := range r.requests {
 		position := state.decodePosition
@@ -329,16 +333,30 @@ func (r *traceActiveRegistry) decodeCountsLocked(m *moeSimulator, runningReqs in
 		prompt := state.execution.prompt.data
 		for layer := 0; layer < m.numLayers; layer++ {
 			base := (position*m.numLayers + layer) * m.topK
+			sourceGPU := (len(prompt.InputTokenIDs) + position) % m.numGPUs
+			if recorded, ok, err := prompt.DecodeSourceGPU(position, layer); err == nil && ok {
+				sourceGPU = recorded
+			}
 			for index := 0; index < m.topK; index++ {
 				expert := int(prompt.DecodeRoutes[base+index])
 				counts[layer][expert]++
+				if profileAssignments != nil {
+					profileAssignments[layer] = append(profileAssignments[layer], traceProfileTokenAssignment{
+						RequestID:     state.execution.promptID,
+						Phase:         traceProfilePhaseDecode,
+						TokenPosition: len(prompt.InputTokenIDs) + position,
+						MoELayer:      layer,
+						ExpertID:      expert,
+						SourceGPU:     sourceGPU,
+					})
+				}
 			}
 		}
 		participants[requestID] = struct{}{}
 		activeTraceTokens++
 	}
 	if activeTraceTokens == 0 {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 
 	// Existing non-trace requests do not expose per-request decode position.
@@ -353,13 +371,13 @@ func (r *traceActiveRegistry) decodeCountsLocked(m *moeSimulator, runningReqs in
 			}
 		}
 	}
-	return counts, participants, true
+	return counts, participants, profileAssignments, true
 }
 
 func (r *traceActiveRegistry) decodeCounts(m *moeSimulator, runningReqs int64) (moeLayerCounts, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	counts, _, ok := r.decodeCountsLocked(m, runningReqs)
+	counts, _, _, ok := r.decodeCountsLocked(m, runningReqs)
 	return counts, ok
 }
 
@@ -415,7 +433,7 @@ func (r *traceActiveRegistry) acquireDecodeStep(requestID string, m *moeSimulato
 			continue
 		}
 
-		counts, participants, ok := r.decodeCountsLocked(m, runningReqs)
+		counts, participants, profileAssignments, ok := r.decodeCountsLocked(m, runningReqs)
 		if !ok {
 			r.mu.Unlock()
 			return traceDecodeTiming{}, false
@@ -436,7 +454,11 @@ func (r *traceActiveRegistry) acquireDecodeStep(requestID string, m *moeSimulato
 		r.current = step
 		r.mu.Unlock()
 
-		modeledLatency := baseLatency + m.latencyForLayerCounts(counts, profileRequestIDs...)
+		modeledLatency := baseLatency + m.traceLatencyForLayerCountsWithProfile(counts, traceForwardProfile{
+			requestIDs:       profileRequestIDs,
+			phase:            traceProfilePhaseDecode,
+			tokenAssignments: profileAssignments,
+		})
 		r.mu.Lock()
 		step.modeledLatency = modeledLatency
 		step.finishAt = step.startedAt.Add(modeledLatency)
