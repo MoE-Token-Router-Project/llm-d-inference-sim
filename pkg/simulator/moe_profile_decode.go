@@ -148,12 +148,17 @@ func decodeAssignmentsForLayer(runtime *moeTraceRuntime, requestIDs []int, posit
 		}
 		base := (position*runtime.store.numLayers + layer) * runtime.store.topK
 		for topK := 0; topK < runtime.store.topK; topK++ {
+			sourceGPU := (len(prompt.InputTokenIDs) + position) % max(1, runtime.store.topK)
+			if recorded, ok, err := prompt.DecodeSourceGPU(position, layer); err == nil && ok {
+				sourceGPU = recorded
+			}
 			assignments = append(assignments, traceProfileTokenAssignment{
 				RequestID:     requestID,
 				Phase:         traceProfilePhaseDecode,
 				TokenPosition: len(prompt.InputTokenIDs) + position,
 				MoELayer:      layer,
 				ExpertID:      int(prompt.DecodeRoutes[base+topK]),
+				SourceGPU:     sourceGPU,
 			})
 		}
 	}
