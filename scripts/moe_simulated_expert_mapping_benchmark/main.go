@@ -50,6 +50,7 @@ type options struct {
 	limit                      int
 	requestTimeout             time.Duration
 	progressEvery              int
+	useDistributedRouting      bool
 }
 
 type serverConfig struct {
@@ -64,6 +65,7 @@ type serverConfig struct {
 	MoETopK                  int     `json:"moe-top-k"`
 	MoENumLayers             int     `json:"moe-num-layers"`
 	MoERouter                string  `json:"moe-router"`
+	UseDistributedRouting    bool    `json:"use-distributed-routing"`
 	MoEExpertPopularityAlpha float64 `json:"moe-expert-popularity-alpha"`
 	MoEHiddenSize            int     `json:"moe-hidden-size"`
 	MoEIntermediateSize      int     `json:"moe-intermediate-size"`
@@ -213,6 +215,7 @@ func main() {
 	flag.IntVar(&opts.limit, "limit", 0, "maximum number of dataset rows to submit; 0 submits all rows")
 	flag.DurationVar(&opts.requestTimeout, "request-timeout", 0, "per-request timeout; 0 disables the client timeout")
 	flag.IntVar(&opts.progressEvery, "progress-every", 100, "print progress every N completed requests; 0 disables progress")
+	flag.BoolVar(&opts.useDistributedRouting, "use-distributed-routing", false, "require the simulator to be running with per-GPU distributed MoE routing enabled")
 	flag.Parse()
 
 	if flag.NArg() != 0 {
@@ -260,7 +263,7 @@ func run(ctx context.Context, opts options) error {
 		return fmt.Errorf("create output directory: %w", err)
 	}
 
-	server, err := preflight(ctx, opts.baseURL, opts.model)
+	server, err := preflight(ctx, opts.baseURL, opts.model, opts.useDistributedRouting)
 	if err != nil {
 		return err
 	}
@@ -395,7 +398,7 @@ func hashFile(path string) (string, error) {
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
-func preflight(ctx context.Context, baseURL, requestedModel string) (serverConfig, error) {
+func preflight(ctx context.Context, baseURL, requestedModel string, requireDistributedRouting bool) (serverConfig, error) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	healthURL := strings.TrimRight(baseURL, "/") + "/health"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
@@ -432,6 +435,9 @@ func preflight(ctx context.Context, baseURL, requestedModel string) (serverConfi
 	}
 	if !config.EnableMoE {
 		return serverConfig{}, errors.New("server does not have MoE simulation enabled")
+	}
+	if requireDistributedRouting && !config.UseDistributedRouting {
+		return serverConfig{}, errors.New("server does not have distributed MoE routing enabled")
 	}
 	if requestedModel != "" && config.Model != requestedModel {
 		return serverConfig{}, fmt.Errorf("server model %q does not match requested model %q", config.Model, requestedModel)
