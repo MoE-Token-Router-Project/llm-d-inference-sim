@@ -39,7 +39,7 @@ import (
 )
 
 const (
-	maxErrorBodyBytes          = 64 << 10
+	maxErrorBodyBytes         = 64 << 10
 	defaultMaxHTTPConnections = 512
 )
 
