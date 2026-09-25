@@ -39,22 +39,22 @@ type moeLatencyCacheKey struct {
 }
 
 type moeSimulator struct {
-	numGPUs             int
-	numExperts          int
-	physicalSlots       int
-	topK                int
-	numLayers           int
-	router              string
+	numGPUs               int
+	numExperts            int
+	physicalSlots         int
+	topK                  int
+	numLayers             int
+	router                string
 	useDistributedRouting bool
-	gpuFlops            float64
-	gpuBandwidth        float64
-	interconnectBW      float64
-	interconnectLatency time.Duration
-	expertWeightBytes   float64
-	flopsPerAssignment  float64
-	activationBytes     float64
-	networkBytes        float64
-	probabilities       []float64
+	gpuFlops              float64
+	gpuBandwidth          float64
+	interconnectBW        float64
+	interconnectLatency   time.Duration
+	expertWeightBytes     float64
+	flopsPerAssignment    float64
+	activationBytes       float64
+	networkBytes          float64
+	probabilities         []float64
 
 	// placements[layer][logicalExpert] is the set of EP ranks that currently
 	// hold a physical copy of that logical expert.
@@ -82,18 +82,18 @@ type moeRoutingState struct {
 
 func newMoESimulator(config *common.Configuration) *moeSimulator {
 	m := &moeSimulator{
-		numGPUs:             config.MoEExpertParallelSize,
-		numExperts:          config.MoENumExperts,
-		physicalSlots:       config.MoEPhysicalExpertSlots,
-		topK:                config.MoETopK,
-		numLayers:           config.MoENumLayers,
+		numGPUs:               config.MoEExpertParallelSize,
+		numExperts:            config.MoENumExperts,
+		physicalSlots:         config.MoEPhysicalExpertSlots,
+		topK:                  config.MoETopK,
+		numLayers:             config.MoENumLayers,
 		router:                config.MoERouter,
 		useDistributedRouting: config.UseDistributedRouting,
 		gpuFlops:              config.MoEGPUFlops,
-		gpuBandwidth:        config.MoEGPUMemoryBandwidth,
-		interconnectBW:      config.MoEInterconnectBandwidth,
-		interconnectLatency: config.MoEInterconnectLatency,
-		latencyCache:        make(map[moeLatencyCacheKey]time.Duration),
+		gpuBandwidth:          config.MoEGPUMemoryBandwidth,
+		interconnectBW:        config.MoEInterconnectBandwidth,
+		interconnectLatency:   config.MoEInterconnectLatency,
+		latencyCache:          make(map[moeLatencyCacheKey]time.Duration),
 	}
 
 	d := float64(config.MoEHiddenSize)
