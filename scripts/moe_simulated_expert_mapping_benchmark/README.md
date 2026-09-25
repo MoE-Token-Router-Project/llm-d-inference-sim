@@ -42,8 +42,11 @@ Start the simulator with MoE simulation enabled and with the router and hardware
   --dataset datasets/moe_simulated_expert_mapping_benchmark_2000.jsonl \
   --base-url http://127.0.0.1:8000 \
   --output-dir results/simulated-expert-mapping-heuristic \
-  --label heuristic
+  --label heuristic \
+  --use-distributed-routing
 ```
+
+Pass `--use-distributed-routing` when benchmarking a simulator started with the same flag. The benchmark checks `/admin/config` and fails before launching requests if distributed routing is not enabled on the simulator.
 
 The benchmark uses the simulator model from `/admin/config` when `--model` is omitted. Use `--limit N` to run only the first N dataset rows and `--request-timeout DURATION` to set a per-request HTTP timeout. The `run.sh` wrapper also tries to raise the open-file limit for the all-at-once request burst.
 
