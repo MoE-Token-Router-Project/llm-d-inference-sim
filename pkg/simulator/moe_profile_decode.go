@@ -148,7 +148,7 @@ func decodeAssignmentsForLayer(runtime *moeTraceRuntime, requestIDs []int, posit
 		}
 		base := (position*runtime.store.numLayers + layer) * runtime.store.topK
 		for topK := 0; topK < runtime.store.topK; topK++ {
-			sourceGPU := (len(prompt.InputTokenIDs) + position) % max(1, runtime.store.topK)
+			sourceGPU := -1
 			if recorded, ok, err := prompt.DecodeSourceGPU(position, layer); err == nil && ok {
 				sourceGPU = recorded
 			}
