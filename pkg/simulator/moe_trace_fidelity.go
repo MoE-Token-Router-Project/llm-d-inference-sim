@@ -543,8 +543,36 @@ func aggregateDistributedTraceRouting(states []*traceRoutingState, numGPUs int) 
 	return aggregate
 }
 
-func (m *moeSimulator) traceRouteDistributedWithTimings(counts []float64, placement [][]int) (*traceRoutingState, []time.Duration, time.Duration) {
-	bySource := splitCountsBySource(counts, m.numGPUs)
+func traceCountsBySource(counts []float64, assignments []traceProfileTokenAssignment, numGPUs int) [][]float64 {
+	bySource := make([][]float64, numGPUs)
+	for source := range bySource {
+		bySource[source] = make([]float64, len(counts))
+	}
+	covered := make([]float64, len(counts))
+	for _, assignment := range assignments {
+		if assignment.SourceGPU < 0 || assignment.SourceGPU >= numGPUs ||
+			assignment.ExpertID < 0 || assignment.ExpertID >= len(counts) {
+			continue
+		}
+		bySource[assignment.SourceGPU][assignment.ExpertID]++
+		covered[assignment.ExpertID]++
+	}
+	for expert, count := range counts {
+		remaining := count - covered[expert]
+		if remaining <= 1e-9 {
+			continue
+		}
+		chunks := distributeReplicaTokens(remaining, numGPUs)
+		for source := range bySource {
+			bySource[source][expert] += chunks[source]
+		}
+	}
+	return bySource
+}
+
+func (m *moeSimulator) traceRouteDistributedWithTimings(counts []float64, placement [][]int,
+	assignments []traceProfileTokenAssignment) (*traceRoutingState, []time.Duration, time.Duration) {
+	bySource := traceCountsBySource(counts, assignments, m.numGPUs)
 	states := make([]*traceRoutingState, m.numGPUs)
 	durations := make([]time.Duration, m.numGPUs)
 	for source := 0; source < m.numGPUs; source++ {
@@ -560,7 +588,7 @@ func (m *moeSimulator) traceRouteDistributedWithTimings(counts []float64, placem
 
 func (m *moeSimulator) traceRoute(counts []float64, placement [][]int) *traceRoutingState {
 	if m.useDistributedRouting && m.numGPUs > 1 {
-		state, _, _ := m.traceRouteDistributedWithTimings(counts, placement)
+		state, _, _ := m.traceRouteDistributedWithTimings(counts, placement, nil)
 		return state
 	}
 	return m.traceRouteCentral(counts, placement)
@@ -579,6 +607,7 @@ type traceProfileTokenAssignment struct {
 	TokenPosition int    `json:"token_position"`
 	MoELayer      int    `json:"moe_layer"`
 	ExpertID      int    `json:"expert_id"`
+	SourceGPU     int    `json:"source_gpu"`
 }
 
 type traceForwardProfile struct {
@@ -830,13 +859,18 @@ func (m *moeSimulator) traceModelExecutionForLayerCountsWithProfile(counts moeLa
 	totalSeconds := 0.0
 	routerLatency := time.Duration(0)
 	for layer := 0; layer < m.numLayers; layer++ {
+		var profileAssignments []traceProfileTokenAssignment
+		if layer < len(profile.tokenAssignments) {
+			profileAssignments = profile.tokenAssignments[layer]
+		}
 		routerStarted := time.Now()
 		var state *traceRoutingState
 		var routerDuration time.Duration
 		var routerDurations []time.Duration
 		var aggregatorDuration time.Duration
 		if m.useDistributedRouting && m.numGPUs > 1 {
-			state, routerDurations, aggregatorDuration = m.traceRouteDistributedWithTimings(counts[layer], placements[layer])
+			state, routerDurations, aggregatorDuration = m.traceRouteDistributedWithTimings(
+				counts[layer], placements[layer], profileAssignments)
 		} else {
 			state = m.traceRouteCentral(counts[layer], placements[layer])
 			routerDuration = time.Since(routerStarted)
@@ -852,10 +886,6 @@ func (m *moeSimulator) traceModelExecutionForLayerCountsWithProfile(counts moeLa
 		}
 		if options.countRouterRuntime {
 			routerLatency += layerRouterWall
-		}
-		var profileAssignments []traceProfileTokenAssignment
-		if layer < len(profile.tokenAssignments) {
-			profileAssignments = profile.tokenAssignments[layer]
 		}
 		gpus, maxCost := m.traceLayerExecution(state, counts[layer], profileAssignments)
 		phase := m.traceCommunicationPhaseCost(state)
@@ -980,7 +1010,7 @@ func (b *tracePrefillBatcher) process(s *SimContext) {
 		requestIDs := make([]int, 0, len(snapshot))
 		seenRequestIDs := make(map[int]struct{}, len(snapshot))
 		var profileAssignments [][]traceProfileTokenAssignment
-		if traceFidelityFor(s.moe).profiler != nil {
+		if traceFidelityFor(s.moe).profiler != nil || s.moe.useDistributedRouting {
 			profileAssignments = make([][]traceProfileTokenAssignment, s.moe.numLayers)
 		}
 		for _, job := range snapshot {
@@ -1075,12 +1105,17 @@ func addTracePrefillProfileAssignments(assignments [][]traceProfileTokenAssignme
 			base := (layer*inputTokens + position) * m.topK
 			for index := 0; index < m.topK; index++ {
 				expert := int(prompt.PrefillRoutes[base+index])
+				sourceGPU := position % m.numGPUs
+				if recorded, ok, err := prompt.PrefillSourceGPU(layer, position); err == nil && ok {
+					sourceGPU = recorded
+				}
 				assignments[layer] = append(assignments[layer], traceProfileTokenAssignment{
 					RequestID:     execution.promptID,
 					Phase:         traceProfilePhasePrefill,
 					TokenPosition: position,
 					MoELayer:      layer,
 					ExpertID:      expert,
+					SourceGPU:     sourceGPU,
 				})
 			}
 		}
