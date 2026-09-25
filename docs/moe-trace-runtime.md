@@ -67,7 +67,7 @@ Unknown hardware retains the ideal roofline. The calibration can be overridden a
 
 The default trace prefill token budget is 1024. Concurrent trace prefills are coalesced and chunked into shared forwards. Active decode requests share one forward per decode generation. All trace MoE forwards reserve one serialized virtual GPU timeline, so two independent HTTP workers cannot make the same simulated eight-GPU model execute overlapping forwards.
 
-The v1 trace does not record the EP source rank of each hidden state. Communication therefore assumes source tokens are balanced across EP ranks and uses the policy-dependent destination load to model the all-to-all bottleneck. Exact source-to-destination traffic requires a future trace format that records source-rank ownership.
+The reader supports both v1 and v2 traces. v2 records one source-GPU byte for every token/layer routing record, so distributed routing can preserve exact source ownership and model source-to-destination traffic directly. For v1 traces, source ownership is reconstructed deterministically as `token_position % EP`, matching the standalone router fallback. Centralized routing retains the existing balanced-source communication approximation.
 
 The HTTP path still performs the routing calculation on the host before it can emit a token. Its Prometheus modeled TTFT/TPOT values use modeled duration, but client wall-clock latency can be larger when the Go calculation itself is slower than the simulated GPU. Prefill and decode also share the same serialized model timeline but are not fused into one mixed prefill-plus-decode HTTP forward. These are simulator-runtime effects, not GPU-model effects.
 
