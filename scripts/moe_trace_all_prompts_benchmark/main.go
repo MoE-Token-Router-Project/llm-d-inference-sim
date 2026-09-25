@@ -38,7 +38,10 @@ import (
 	"github.com/llm-d/llm-d-inference-sim/pkg/moetrace"
 )
 
-const maxErrorBodyBytes = 64 << 10
+const (
+	maxErrorBodyBytes          = 64 << 10
+	defaultMaxHTTPConnections = 512
+)
 
 type options struct {
 	tracePath      string
@@ -46,8 +49,9 @@ type options struct {
 	model          string
 	outputDir      string
 	label          string
-	requestTimeout time.Duration
-	progressEvery          int
+	requestTimeout        time.Duration
+	progressEvery         int
+	maxHTTPConnections    int
 	useDistributedRouting bool
 }
 
@@ -194,6 +198,7 @@ func main() {
 	flag.StringVar(&opts.label, "label", "", "optional label stored with the result, for example split or heuristic")
 	flag.DurationVar(&opts.requestTimeout, "request-timeout", 0, "per-request timeout; 0 disables the client timeout")
 	flag.IntVar(&opts.progressEvery, "progress-every", 100, "print progress every N completed requests; 0 disables progress")
+	flag.IntVar(&opts.maxHTTPConnections, "max-http-connections", defaultMaxHTTPConnections, "maximum concurrent HTTP connections to the simulator")
 	flag.BoolVar(&opts.useDistributedRouting, "use-distributed-routing", false, "require the simulator to be running with per-GPU distributed MoE routing enabled")
 	flag.Parse()
 
@@ -211,6 +216,10 @@ func main() {
 	}
 	if opts.progressEvery < 0 {
 		fmt.Fprintln(os.Stderr, "--progress-every must be non-negative")
+		os.Exit(2)
+	}
+	if opts.maxHTTPConnections <= 0 {
+		fmt.Fprintln(os.Stderr, "--max-http-connections must be positive")
 		os.Exit(2)
 	}
 
@@ -262,7 +271,7 @@ func run(ctx context.Context, opts options) error {
 	}
 
 	endpoint := strings.TrimRight(opts.baseURL, "/") + "/v1/chat/completions"
-	client := newHTTPClient(opts.requestTimeout)
+	client := newHTTPClient(opts.requestTimeout, opts.maxHTTPConnections)
 	defer client.CloseIdleConnections()
 
 	results := make([]requestResult, metadata.NumPrompts)
@@ -394,10 +403,11 @@ func preflight(ctx context.Context, baseURL string, metadata moetrace.Metadata, 
 	return config, nil
 }
 
-func newHTTPClient(timeout time.Duration) *http.Client {
+func newHTTPClient(timeout time.Duration, maxConnections int) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.MaxIdleConns = 256
-	transport.MaxIdleConnsPerHost = 256
+	transport.MaxIdleConns = maxConnections
+	transport.MaxIdleConnsPerHost = maxConnections
+	transport.MaxConnsPerHost = maxConnections
 	transport.IdleConnTimeout = 90 * time.Second
 	client := &http.Client{Transport: transport}
 	if timeout > 0 {
