@@ -118,6 +118,35 @@ Three replica-routing policies are available:
 - `concentrate`: send all assignments for an expert to one replica selected to minimize the current GPU critical path.
 - `heuristic`: choose how many replicas to activate from the compute-to-weight-loading ratio, place those shares greedily, then perform bounded local rebalancing.
 
+## Distributed token routing
+
+Pass `--use-distributed-routing` to run one independent instance of the selected
+`--moe-router` policy for each expert-parallel GPU. Each local router sees only
+the token-expert assignments whose source is that GPU, while all router
+instances use the same expert placement. The simulator then aggregates the
+local destination mappings before calculating the GPU MLP workload.
+
+For trace replay, v2 `.moetrace` files provide the recorded source GPU for
+each token and sparse layer. v1 traces remain supported and use the same
+deterministic fallback as the standalone token router:
+
+```text
+source_gpu = token_position % moe-expert-parallel-size
+```
+
+For synthetic workloads, which do not contain individual token identities,
+logical expert demand is divided deterministically across source GPUs before
+the local routers run.
+
+The aggregator does not reroute assignments. If GPU 0 sends some work to GPU 1
+and GPU 2 independently sends more work to GPU 1, the two contributions are
+summed into GPU 1's final expert workload. An expert weight-load charge is paid
+once per destination GPU after aggregation.
+
+Distributed routing also preserves the source-to-destination assignment matrix.
+Dispatch and combine communication use the largest remote send or receive
+volume rather than the centralized router's uniform-source approximation.
+
 ## Cost model
 
 For hidden size `d`, intermediate size `d_ff`, and `b` bytes per element, one expert uses:
@@ -200,6 +229,7 @@ The available MoE parameters are:
 - `moe-top-k`: logical experts selected per token, default `4`.
 - `moe-num-layers`: MoE layers included in the cost, default `24`.
 - `moe-router`: `split`, `concentrate`, or `heuristic`, default `split`.
+- `use-distributed-routing`: run one independent selected router per source GPU and aggregate the outputs, default `false`.
 - `moe-expert-popularity-alpha`: power-law popularity alpha, default `0.8`.
 - `moe-hidden-size`: model hidden size, default `2048`.
 - `moe-intermediate-size`: expert intermediate size, default `1408`.
