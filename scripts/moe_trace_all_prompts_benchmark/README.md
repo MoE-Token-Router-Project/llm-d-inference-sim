@@ -24,6 +24,7 @@ make build
   --moe-top-k 4 \
   --moe-num-layers 24 \
   --moe-router heuristic \
+  --use-distributed-routing \
   --max-model-len 16384 \
   --max-num-seqs 32 \
   --max-waiting-queue-length 2000 \
@@ -50,8 +51,11 @@ scripts/moe_trace_all_prompts_benchmark/run.sh \
   --trace /path/to/instructcoder_2000_both.moetrace \
   --base-url http://127.0.0.1:8000 \
   --label heuristic \
-  --output-dir results/instructcoder-heuristic
+  --output-dir results/instructcoder-heuristic \
+  --use-distributed-routing
 ```
+
+Pass `--use-distributed-routing` to the benchmark when the simulator was started with distributed routing. The preflight check reads `/admin/config` and fails before the timed run if the simulator does not report distributed routing as enabled.
 
 `--model` is optional and defaults to the model stored in the trace. `--request-timeout 0` is the default and disables the client-wide request timeout, which is useful for queue-heavy experiments. Use `--progress-every 0` to disable completion progress messages.
 
