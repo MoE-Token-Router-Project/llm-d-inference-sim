@@ -16,6 +16,7 @@ package main
 
 import (
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -143,6 +144,25 @@ func TestClassifyStreamChunk(t *testing.T) {
 				t.Fatalf("stream error = %q, want %q", gotError, test.wantError)
 			}
 		})
+	}
+}
+
+func TestNewHTTPClientCapsConnections(t *testing.T) {
+	client := newHTTPClient(0, 512)
+	defer client.CloseIdleConnections()
+
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("client transport type = %T, want *http.Transport", client.Transport)
+	}
+	if transport.MaxConnsPerHost != 512 {
+		t.Fatalf("MaxConnsPerHost = %d, want 512", transport.MaxConnsPerHost)
+	}
+	if transport.MaxIdleConnsPerHost != 512 {
+		t.Fatalf("MaxIdleConnsPerHost = %d, want 512", transport.MaxIdleConnsPerHost)
+	}
+	if transport.MaxIdleConns != 512 {
+		t.Fatalf("MaxIdleConns = %d, want 512", transport.MaxIdleConns)
 	}
 }
 
