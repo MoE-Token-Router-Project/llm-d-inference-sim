@@ -277,6 +277,10 @@ type Configuration struct {
 	MoENumLayers int `yaml:"moe-num-layers" json:"moe-num-layers"`
 	// MoERouter selects the replica routing policy.
 	MoERouter string `yaml:"moe-router" json:"moe-router"`
+	// UseDistributedRouting runs one independent token router per source expert-parallel GPU.
+	// Each router sees only its source GPU's assignments; the simulator aggregates the
+	// resulting destination mappings before modeling expert execution and communication.
+	UseDistributedRouting bool `yaml:"use-distributed-routing" json:"use-distributed-routing"`
 	// MoEExpertPopularityAlpha controls the synthetic power-law expert popularity distribution.
 	MoEExpertPopularityAlpha float64 `yaml:"moe-expert-popularity-alpha" json:"moe-expert-popularity-alpha"`
 	// MoEHiddenSize and MoEIntermediateSize define the expert FFN dimensions used by the cost model.
@@ -431,6 +435,7 @@ func newConfig() *Configuration {
 		MoETopK:                                   4,
 		MoENumLayers:                              24,
 		MoERouter:                                 MoERouterSplit,
+		UseDistributedRouting:                     false,
 		MoEExpertPopularityAlpha:                  0.8,
 		MoEHiddenSize:                             2048,
 		MoEIntermediateSize:                       1408,
