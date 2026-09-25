@@ -44,14 +44,14 @@ const (
 )
 
 type options struct {
-	tracePath             string
-	baseURL               string
-	model                 string
-	outputDir             string
-	label                 string
-	requestTimeout        time.Duration
-	progressEvery         int
-	maxHTTPConnections    int
+	tracePath          string
+	baseURL            string
+	model              string
+	outputDir          string
+	label              string
+	requestTimeout     time.Duration
+	progressEvery      int
+	maxHTTPConnections int
 }
 
 type serverConfig struct {
