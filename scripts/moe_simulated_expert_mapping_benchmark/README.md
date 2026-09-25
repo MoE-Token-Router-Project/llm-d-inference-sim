@@ -97,11 +97,10 @@ In a second terminal:
   --base-url http://127.0.0.1:8000 \
   --output-dir results/simulated-expert-mapping-heuristic \
   --label heuristic \
-  --use-distributed-routing \
   --max-http-connections 512
 ```
 
-The benchmark performs `/health` and `/admin/config` preflight checks, then releases one client goroutine per selected prompt and sends streaming chat-completion requests to the simulator. The simulator admits up to `--max-num-seqs` active requests and queues the rest up to `--max-waiting-queue-length`.
+The benchmark performs `/health` and `/admin/config` preflight checks, then releases one client goroutine per selected prompt and sends streaming chat-completion requests to the simulator. The client does not choose the routing mode; routing is configured entirely on the simulator, and the server configuration recorded in the result shows which mode was used. The simulator admits up to `--max-num-seqs` active requests and queues the rest up to `--max-waiting-queue-length`.
 
 The client defaults to `--max-http-connections 512` to avoid opening thousands of TCP connections at once. All benchmark goroutines are still released together; requests above the connection cap wait inside the Go HTTP transport, and that waiting time is included in request latency and TTFT. Override the cap when needed. On macOS, if you still see `connection reset by peer` errors, first confirm the setup with a smaller burst such as:
 
@@ -112,7 +111,6 @@ The client defaults to `--max-http-connections 512` to avoid opening thousands o
   --base-url http://127.0.0.1:8000 \
   --output-dir results/simulated-expert-mapping-heuristic-1000 \
   --label heuristic \
-  --use-distributed-routing \
   --max-http-connections 512
 ```
 
@@ -157,11 +155,8 @@ Start the simulator with MoE simulation enabled and with the router and hardware
   --base-url http://127.0.0.1:8000 \
   --output-dir results/simulated-expert-mapping-heuristic \
   --label heuristic \
-  --use-distributed-routing \
   --max-http-connections 512
 ```
-
-Pass `--use-distributed-routing` when benchmarking a simulator started with the same flag. The benchmark checks `/admin/config` and fails before launching requests if distributed routing is not enabled on the simulator.
 
 The benchmark uses the simulator model from `/admin/config` when `--model` is omitted. Use `--limit N` to run only the first N dataset rows, `--request-timeout DURATION` to set a per-request HTTP timeout, and `--max-http-connections N` to bound concurrent TCP connections to the simulator. The default connection cap is 512. The `run.sh` wrapper also tries to raise the open-file limit for the all-at-once request burst.
 
