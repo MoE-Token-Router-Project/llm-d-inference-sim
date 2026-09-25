@@ -106,6 +106,7 @@ MoE simulation is disabled by default and is independent of data parallelism. Ea
 - `moe-top-k`: number of logical experts selected per token, default is 4.
 - `moe-num-layers`: number of MoE layers included in the cost model, default is 24.
 - `moe-router`: expert replica routing policy. Supported values are `split`, `concentrate`, and `heuristic`; default is `split`.
+- `use-distributed-routing`: run one independent selected MoE router per source GPU and aggregate the resulting destination mappings; default is false.
 - `moe-expert-popularity-alpha`: power-law alpha for synthetic logical-expert popularity, default is 0.8. Zero is uniform.
 - `moe-hidden-size`: hidden dimension used by the expert cost model, default is 2048.
 - `moe-intermediate-size`: expert intermediate dimension, default is 1408.
