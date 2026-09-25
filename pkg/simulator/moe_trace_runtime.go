@@ -126,6 +126,18 @@ func loadMoETraceStore(path string, config *common.Configuration) (*moeTraceStor
 		if err != nil {
 			return nil, fmt.Errorf("read prompt %d: %w", promptID, err)
 		}
+		for _, sourceGPU := range prompt.PrefillSourceGPUs {
+			if sourceGPU != 0xff && int(sourceGPU) >= config.MoEExpertParallelSize {
+				return nil, fmt.Errorf("trace prompt %d records source GPU %d outside configured EP size %d",
+					promptID, sourceGPU, config.MoEExpertParallelSize)
+			}
+		}
+		for _, sourceGPU := range prompt.DecodeSourceGPUs {
+			if sourceGPU != 0xff && int(sourceGPU) >= config.MoEExpertParallelSize {
+				return nil, fmt.Errorf("trace prompt %d records source GPU %d outside configured EP size %d",
+					promptID, sourceGPU, config.MoEExpertParallelSize)
+			}
+		}
 		store.prompts[promptID] = &moeTracePrompt{
 			data:            prompt,
 			prefillCounts:   prefillCountsAsFloat64(prompt, store.numLayers, store.numExperts),
