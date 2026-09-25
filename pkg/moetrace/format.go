@@ -23,8 +23,12 @@ import (
 )
 
 const (
-	FormatVersion         uint32 = 1
-	headerSize                   = 112
+	FormatVersion             uint32 = 1
+	maxSupportedFormatVersion uint32 = 2
+	sourceGPUBytes                    = 1
+	unknownSourceGPU           uint8  = 0xff
+	maxSourceGPU               uint8  = 127
+	headerSize                        = 112
 	indexEntrySize               = 32
 	promptBlockHeaderSize        = 32
 )
@@ -38,8 +42,9 @@ type Metadata struct {
 	TopK          int              `json:"top_k"`
 	SparseLayers  []int            `json:"sparse_layers"`
 	NumPrompts    int              `json:"num_prompts"`
-	ExpertIDBytes int              `json:"expert_id_bytes"`
-	Prompts       []PromptMetadata `json:"prompts"`
+	ExpertIDBytes  int              `json:"expert_id_bytes"`
+	SourceGPUBytes int              `json:"source_gpu_bytes,omitempty"`
+	Prompts        []PromptMetadata `json:"prompts"`
 }
 
 type PromptMetadata struct {
@@ -131,7 +136,7 @@ func readHeader(r io.ReaderAt) (fileHeader, error) {
 		ExpertIDBytes:  binary.LittleEndian.Uint32(buf[68:72]),
 	}
 	copy(h.SourceSHA256[:], buf[80:112])
-	if h.Version != FormatVersion {
+	if h.Version < FormatVersion || h.Version > maxSupportedFormatVersion {
 		return fileHeader{}, fmt.Errorf("unsupported MoE trace version %d", h.Version)
 	}
 	if h.ExpertIDBytes != 1 && h.ExpertIDBytes != 2 {
@@ -155,6 +160,11 @@ func readIndexEntry(r io.ReaderAt, offset int64) (indexEntry, error) {
 }
 
 func promptBlockLength(inputTokens, decodeTokens, numLayers, numExperts, topK, expertBytes uint64) (uint64, error) {
+	return promptBlockLengthForVersion(inputTokens, decodeTokens, numLayers, numExperts, topK, expertBytes, FormatVersion, 0)
+}
+
+func promptBlockLengthForVersion(inputTokens, decodeTokens, numLayers, numExperts, topK, expertBytes uint64,
+	version uint32, sourceBytes uint64) (uint64, error) {
 	inputBytes, err := checkedMul(inputTokens, 4)
 	if err != nil {
 		return 0, err
@@ -190,6 +200,20 @@ func promptBlockLength(inputTokens, decodeTokens, numLayers, numExperts, topK, e
 	total := uint64(promptBlockHeaderSize)
 	for _, n := range []uint64{inputBytes, decodeBytes, countBytes, routeBytes} {
 		total, err = checkedAdd(total, n)
+		if err != nil {
+			return 0, err
+		}
+	}
+	if version >= 2 {
+		sourceEntries, err := checkedMul(allTokens, numLayers)
+		if err != nil {
+			return 0, err
+		}
+		sourceDataBytes, err := checkedMul(sourceEntries, sourceBytes)
+		if err != nil {
+			return 0, err
+		}
+		total, err = checkedAdd(total, sourceDataBytes)
 		if err != nil {
 			return 0, err
 		}
