@@ -98,11 +98,10 @@ In a second terminal:
   --base-url http://127.0.0.1:8000 \
   --label heuristic \
   --output-dir results/instructcoder-heuristic \
-  --use-distributed-routing \
   --max-http-connections 512
 ```
 
-The benchmark first checks `/health` and `/admin/config`, then submits every prompt in the trace. Each HTTP request carries the corresponding `trace_prompt_id`, so the simulator replays that prompt's recorded token IDs and per-layer expert choices rather than generating a synthetic expert mapping.
+The benchmark first checks `/health` and `/admin/config`, then submits every prompt in the trace. The client does not choose the routing mode; routing is configured entirely on the simulator, and the server configuration recorded in the result shows which mode was used. Each HTTP request carries the corresponding `trace_prompt_id`, so the simulator replays that prompt's recorded token IDs and per-layer expert choices rather than generating a synthetic expert mapping.
 
 For large traces, both the client and simulator processes need enough file descriptors for the all-at-once HTTP burst. The client defaults to `--max-http-connections 512`, which limits simultaneous TCP connections while still releasing all logical benchmark requests together. Requests above the cap wait inside the Go HTTP transport, and that waiting time is included in request latency and TTFT. The `run.sh` wrapper raises the client's soft file-descriptor limit when possible; because the simulator is a separate process, set an adequate `ulimit -n` in the simulator shell as well.
 
@@ -152,11 +151,8 @@ scripts/moe_trace_all_prompts_benchmark/run.sh \
   --base-url http://127.0.0.1:8000 \
   --label heuristic \
   --output-dir results/instructcoder-heuristic \
-  --use-distributed-routing \
   --max-http-connections 512
 ```
-
-Pass `--use-distributed-routing` to the benchmark when the simulator was started with distributed routing. The preflight check reads `/admin/config` and fails before the timed run if the simulator does not report distributed routing as enabled.
 
 `--model` is optional and defaults to the model stored in the trace. `--request-timeout 0` is the default and disables the client-wide request timeout, which is useful for queue-heavy experiments. `--max-http-connections` defaults to 512 and bounds concurrent TCP connections to the simulator. Use `--progress-every 0` to disable completion progress messages.
 
