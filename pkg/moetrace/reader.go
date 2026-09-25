@@ -295,7 +295,6 @@ func (p *PromptData) DecodeExperts(position, layerSlot int) ([]uint16, error) {
 	return p.DecodeRoutes[base : base+p.topK], nil
 }
 
-
 func (p *PromptData) PrefillSourceGPU(layerSlot, position int) (int, bool, error) {
 	if layerSlot < 0 || layerSlot >= p.numLayers || position < 0 || position >= len(p.InputTokenIDs) {
 		return 0, false, errors.New("prefill source GPU index out of range")
