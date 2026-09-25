@@ -30,15 +30,15 @@ import (
 )
 
 const (
-	profilePIDSimulated = 1
-	profilePIDHost      = 2
+	profilePIDSimulated  = 1
+	profilePIDHost       = 2
 	profileTIDRouter     = 100
 	profileTIDEPLB       = 101
 	profileTIDAggregator = 102
 	profileTIDDispatch   = 200
-	profileTIDCombine   = 201
-	profileTIDMigration = 202
-	profileTIDGPUBase   = 1000
+	profileTIDCombine    = 201
+	profileTIDMigration  = 202
+	profileTIDGPUBase    = 1000
 )
 
 type chromeTraceEvent struct {
