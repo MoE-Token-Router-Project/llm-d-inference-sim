@@ -160,6 +160,38 @@ var _ = Describe("MoE expert-parallel simulation", func() {
 		Expect(activeExpertCopies(heuristic)).To(BeNumerically("<=", 12))
 	})
 
+	It("runs one independent router per source GPU and aggregates destination loads", func() {
+		config := testMoEConfig(common.MoERouterHeuristic)
+		config.UseDistributedRouting = true
+		model := newMoESimulator(config)
+		counts := make([]float64, model.numExperts)
+		for expert, probability := range model.probabilities {
+			counts[expert] = 128 * float64(model.topK) * probability
+		}
+
+		state := model.route(counts, model.placements[0])
+		Expect(state.sourceToDestination).To(HaveLen(model.numGPUs))
+		total := 0.0
+		for source := 0; source < model.numGPUs; source++ {
+			Expect(state.sourceToDestination[source]).To(HaveLen(model.numGPUs))
+			for destination := 0; destination < model.numGPUs; destination++ {
+				total += state.sourceToDestination[source][destination]
+			}
+		}
+		expected := 0.0
+		for _, count := range counts {
+			expected += count
+		}
+		Expect(total).To(BeNumerically("~", expected, 1e-9))
+		for destination := 0; destination < model.numGPUs; destination++ {
+			received := 0.0
+			for source := 0; source < model.numGPUs; source++ {
+				received += state.sourceToDestination[source][destination]
+			}
+			Expect(received).To(BeNumerically("~", state.loads[destination], 1e-9))
+		}
+	})
+
 	It("accounts for interconnect bandwidth", func() {
 		fastConfig := testMoEConfig(common.MoERouterSplit)
 		slowConfig := testMoEConfig(common.MoERouterSplit)

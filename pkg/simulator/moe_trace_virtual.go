@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/llm-d/llm-d-inference-sim/pkg/common"
+	"github.com/llm-d/llm-d-inference-sim/pkg/moetrace"
 )
 
 const (
@@ -52,7 +53,7 @@ type MoETraceVirtualResult struct {
 	OutputTokens          int
 	DecodeForwards        int
 	Steps                 int
-	PrefillSteps           int
+	PrefillSteps          int
 	DecodeOnlySteps       int
 	MixedSteps            int
 	ModeledTime           time.Duration
@@ -154,9 +155,17 @@ func RunMoETraceVirtualBenchmark(options MoETraceVirtualOptions) (MoETraceVirtua
 		}
 
 		counts := newMoELayerCounts(model.numLayers, model.numExperts)
+		var profileAssignments [][]traceProfileTokenAssignment
+		if model.useDistributedRouting {
+			profileAssignments = make([][]traceProfileTokenAssignment, model.numLayers)
+		}
 		for _, index := range decodeIndices {
 			sequence := &sequences[index]
 			addTraceDecodePosition(counts, sequence.prompt, sequence.decodePosition, model)
+			if profileAssignments != nil {
+				addVirtualDecodeProfileAssignments(profileAssignments, sequence.prompt.data,
+					sequence.decodePosition, index, model)
+			}
 		}
 		remainingBudget := budget - len(decodeIndices)
 		prefillTokens := 0
@@ -179,8 +188,13 @@ func RunMoETraceVirtualBenchmark(options MoETraceVirtualOptions) (MoETraceVirtua
 			if take > remainingBudget {
 				take = remainingBudget
 			}
-			addTracePrefillRange(counts, sequence.prompt.data,
-				sequence.prefillPos, sequence.prefillPos+take, model)
+			start := sequence.prefillPos
+			end := sequence.prefillPos + take
+			addTracePrefillRange(counts, sequence.prompt.data, start, end, model)
+			if profileAssignments != nil {
+				addVirtualPrefillProfileAssignments(profileAssignments, sequence.prompt.data,
+					start, end, index, model)
+			}
 			sequence.prefillPos += take
 			prefillTokens += take
 			remainingBudget -= take
@@ -198,7 +212,9 @@ func RunMoETraceVirtualBenchmark(options MoETraceVirtualOptions) (MoETraceVirtua
 			}
 			return MoETraceVirtualResult{}, errors.New("virtual MoE trace scheduler made no progress")
 		}
-		modeled := model.traceModelLatencyForLayerCounts(counts)
+		modeled := model.traceModelExecutionForLayerCountsWithProfile(counts, traceForwardProfile{
+			tokenAssignments: profileAssignments,
+		}).duration
 		result.ModeledTime += modeled
 		result.Steps++
 		result.DecodeForwards += len(decodeIndices)
@@ -321,6 +337,50 @@ func finishVirtualPrefill(sequence *virtualTraceSequence) {
 		sequence.phase = virtualPhaseDecode
 	} else {
 		sequence.phase = virtualPhaseDone
+	}
+}
+
+func addVirtualPrefillProfileAssignments(assignments [][]traceProfileTokenAssignment, prompt *moetrace.PromptData,
+	start, end, requestID int, model *moeSimulator) {
+	inputTokens := len(prompt.InputTokenIDs)
+	if start < 0 {
+		start = 0
+	}
+	if end > inputTokens {
+		end = inputTokens
+	}
+	for layer := 0; layer < model.numLayers; layer++ {
+		for position := start; position < end; position++ {
+			sourceGPU := position % model.numGPUs
+			if recorded, ok, err := prompt.PrefillSourceGPU(layer, position); err == nil && ok {
+				sourceGPU = recorded
+			}
+			base := (layer*inputTokens + position) * model.topK
+			for index := 0; index < model.topK; index++ {
+				assignments[layer] = append(assignments[layer], traceProfileTokenAssignment{
+					RequestID: requestID, Phase: traceProfilePhasePrefill, TokenPosition: position,
+					MoELayer: layer, ExpertID: int(prompt.PrefillRoutes[base+index]), SourceGPU: sourceGPU,
+				})
+			}
+		}
+	}
+}
+
+func addVirtualDecodeProfileAssignments(assignments [][]traceProfileTokenAssignment, prompt *moetrace.PromptData,
+	position, requestID int, model *moeSimulator) {
+	for layer := 0; layer < model.numLayers; layer++ {
+		sourceGPU := (len(prompt.InputTokenIDs) + position) % model.numGPUs
+		if recorded, ok, err := prompt.DecodeSourceGPU(position, layer); err == nil && ok {
+			sourceGPU = recorded
+		}
+		base := (position*model.numLayers + layer) * model.topK
+		for index := 0; index < model.topK; index++ {
+			assignments[layer] = append(assignments[layer], traceProfileTokenAssignment{
+				RequestID: requestID, Phase: traceProfilePhaseDecode,
+				TokenPosition: len(prompt.InputTokenIDs) + position, MoELayer: layer,
+				ExpertID: int(prompt.DecodeRoutes[base+index]), SourceGPU: sourceGPU,
+			})
+		}
 	}
 }
 

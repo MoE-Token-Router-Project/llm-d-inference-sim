@@ -38,7 +38,10 @@ import (
 	"time"
 )
 
-const maxErrorBodyBytes = 64 << 10
+const (
+	maxErrorBodyBytes         = 64 << 10
+	defaultMaxHTTPConnections = 512
+)
 
 type options struct {
 	datasetPath                string
@@ -50,6 +53,7 @@ type options struct {
 	limit                      int
 	requestTimeout             time.Duration
 	progressEvery              int
+	maxHTTPConnections         int
 }
 
 type serverConfig struct {
@@ -64,6 +68,7 @@ type serverConfig struct {
 	MoETopK                  int     `json:"moe-top-k"`
 	MoENumLayers             int     `json:"moe-num-layers"`
 	MoERouter                string  `json:"moe-router"`
+	UseDistributedRouting    bool    `json:"use-distributed-routing"`
 	MoEExpertPopularityAlpha float64 `json:"moe-expert-popularity-alpha"`
 	MoEHiddenSize            int     `json:"moe-hidden-size"`
 	MoEIntermediateSize      int     `json:"moe-intermediate-size"`
@@ -213,6 +218,7 @@ func main() {
 	flag.IntVar(&opts.limit, "limit", 0, "maximum number of dataset rows to submit; 0 submits all rows")
 	flag.DurationVar(&opts.requestTimeout, "request-timeout", 0, "per-request timeout; 0 disables the client timeout")
 	flag.IntVar(&opts.progressEvery, "progress-every", 100, "print progress every N completed requests; 0 disables progress")
+	flag.IntVar(&opts.maxHTTPConnections, "max-http-connections", defaultMaxHTTPConnections, "maximum concurrent HTTP connections to the simulator")
 	flag.Parse()
 
 	if flag.NArg() != 0 {
@@ -237,6 +243,10 @@ func main() {
 	}
 	if opts.progressEvery < 0 {
 		fmt.Fprintln(os.Stderr, "--progress-every must be non-negative")
+		os.Exit(2)
+	}
+	if opts.maxHTTPConnections <= 0 {
+		fmt.Fprintln(os.Stderr, "--max-http-connections must be positive")
 		os.Exit(2)
 	}
 
@@ -281,7 +291,7 @@ func run(ctx context.Context, opts options) error {
 	}
 
 	endpoint := strings.TrimRight(opts.baseURL, "/") + "/v1/chat/completions"
-	client := newHTTPClient(opts.requestTimeout)
+	client := newHTTPClient(opts.requestTimeout, opts.maxHTTPConnections)
 	defer client.CloseIdleConnections()
 
 	results := make([]requestResult, len(prompts))
@@ -439,10 +449,11 @@ func preflight(ctx context.Context, baseURL, requestedModel string) (serverConfi
 	return config, nil
 }
 
-func newHTTPClient(timeout time.Duration) *http.Client {
+func newHTTPClient(timeout time.Duration, maxConnections int) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.MaxIdleConns = 256
-	transport.MaxIdleConnsPerHost = 256
+	transport.MaxIdleConns = maxConnections
+	transport.MaxIdleConnsPerHost = maxConnections
+	transport.MaxConnsPerHost = maxConnections
 	transport.IdleConnTimeout = 90 * time.Second
 	client := &http.Client{Transport: transport}
 	if timeout > 0 {

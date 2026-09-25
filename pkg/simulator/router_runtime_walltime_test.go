@@ -137,3 +137,55 @@ func TestTraceRouterRuntimeWallTimeToggle(t *testing.T) {
 		}
 	}
 }
+
+func TestDistributedRouterRuntimeUsesCriticalPath(t *testing.T) {
+	config := tinyMoEConfig()
+	config.MoERouter = common.MoERouterHeuristic
+	config.MoEExpertParallelSize = 4
+	config.MoENumExperts = 16
+	config.MoEPhysicalExpertSlots = 32
+	config.MoETopK = 2
+	config.MoENumLayers = 2
+	config.UseDistributedRouting = true
+
+	counts := newMoELayerCounts(config.MoENumLayers, config.MoENumExperts)
+	for layer := range counts {
+		for expert := range counts[layer] {
+			counts[layer][expert] = float64((expert % 5) + 1)
+		}
+	}
+
+	model := newMoESimulator(config)
+	traceFidelityConfigs.Store(model, &traceFidelityConfig{
+		fixedPlacement:     true,
+		countRouterRuntime: true,
+		memoryEfficiency:   1,
+		computeEfficiency:  1,
+		prefillBatchTokens: defaultTracePrefillBatchTokens,
+	})
+	defer traceFidelityConfigs.Delete(model)
+
+	execution := model.traceModelExecutionForLayerCounts(counts)
+	wantRouter := time.Duration(0)
+	for _, layer := range execution.layers {
+		if len(layer.routerDurations) != config.MoEExpertParallelSize {
+			t.Fatalf("layer %d measured %d local routers, want %d",
+				layer.layer, len(layer.routerDurations), config.MoEExpertParallelSize)
+		}
+		wantRouter += layer.routerWallDuration()
+	}
+
+	modeled := execution.migration
+	for _, layer := range execution.layers {
+		modeled += layer.duration
+	}
+	const tolerance = 100 * time.Nanosecond
+	delta := execution.duration - (modeled + wantRouter)
+	if delta < 0 {
+		delta = -delta
+	}
+	if delta > tolerance {
+		t.Fatalf("distributed duration=%s, want modeled=%s + router critical path=%s",
+			execution.duration, modeled, wantRouter)
+	}
+}

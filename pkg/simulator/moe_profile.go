@@ -30,14 +30,15 @@ import (
 )
 
 const (
-	profilePIDSimulated = 1
-	profilePIDHost      = 2
-	profileTIDRouter    = 100
-	profileTIDEPLB      = 101
-	profileTIDDispatch  = 200
-	profileTIDCombine   = 201
-	profileTIDMigration = 202
-	profileTIDGPUBase   = 1000
+	profilePIDSimulated  = 1
+	profilePIDHost       = 2
+	profileTIDRouter     = 100
+	profileTIDEPLB       = 101
+	profileTIDAggregator = 102
+	profileTIDDispatch   = 200
+	profileTIDCombine    = 201
+	profileTIDMigration  = 202
+	profileTIDGPUBase    = 1000
 )
 
 type chromeTraceEvent struct {
@@ -111,7 +112,42 @@ func (r *moeProfileRecorder) renderExecution(start time.Time, execution traceMod
 	}
 	for _, layer := range execution.layers {
 		routerStart := cursor
-		if layer.routerDuration > 0 {
+		if len(layer.routerDurations) > 0 {
+			maxRouter := time.Duration(0)
+			for sourceGPU, duration := range layer.routerDurations {
+				if duration > maxRouter {
+					maxRouter = duration
+				}
+				tid := profileTIDGPUBase + sourceGPU*10
+				args := profileArgs(execution.requestIDs, execution.phase, map[string]any{
+					"gpu":           sourceGPU,
+					"source_gpu":    sourceGPU,
+					"layer":         layer.layer,
+					"moe_layer":     layer.layer,
+					"measured_us":   durationMicros(duration),
+					"timing_source": "simulator_host_cpu",
+				})
+				if duration > 0 {
+					r.span("MoE Router", "gpu.router", tid, routerStart, duration, args)
+				} else {
+					r.instant("MoE Router", "gpu.router", tid, routerStart, args)
+				}
+			}
+			aggregatorStart := routerStart.Add(maxRouter)
+			if layer.aggregatorDuration > 0 {
+				r.span("Routing aggregator", "cpu.router_aggregator", profileTIDAggregator, aggregatorStart, layer.aggregatorDuration,
+					profileArgs(execution.requestIDs, execution.phase, map[string]any{
+						"layer":         layer.layer,
+						"moe_layer":     layer.layer,
+						"measured_us":   durationMicros(layer.aggregatorDuration),
+						"timing_source": "simulator_host_cpu",
+					}))
+			} else {
+				r.instant("Routing aggregator", "cpu.router_aggregator", profileTIDAggregator, aggregatorStart,
+					profileArgs(execution.requestIDs, execution.phase, map[string]any{"layer": layer.layer, "moe_layer": layer.layer}))
+			}
+			cursor = aggregatorStart.Add(layer.aggregatorDuration)
+		} else if layer.routerDuration > 0 {
 			r.span("Route layer", "cpu.router", profileTIDRouter, routerStart, layer.routerDuration, profileArgs(execution.requestIDs, execution.phase, map[string]any{
 				"layer":         layer.layer,
 				"moe_layer":     layer.layer,
@@ -125,7 +161,7 @@ func (r *moeProfileRecorder) renderExecution(start time.Time, execution traceMod
 		dispatchStart := cursor
 		if layer.dispatch > 0 {
 			r.span("Expert dispatch", "network.dispatch", profileTIDDispatch, dispatchStart, layer.dispatch, profileArgs(execution.requestIDs, execution.phase, map[string]any{"layer": layer.layer, "moe_layer": layer.layer}))
-			if layer.routerDuration > 0 {
+			if len(layer.routerDurations) == 0 && layer.routerDuration > 0 {
 				routeFlow := r.newFlowID()
 				r.flow("Route to dispatch", "s", profileTIDRouter, midpoint(routerStart, layer.routerDuration), routeFlow)
 				r.flow("Route to dispatch", "f", profileTIDDispatch, midpoint(dispatchStart, layer.dispatch), routeFlow)
@@ -248,6 +284,7 @@ func (r *moeProfileRecorder) initializeTracks(numGPUs int) {
 	r.metadataForProcess(profilePIDSimulated, "process_name", 0, map[string]any{"name": "Simulated system"})
 	r.threadMetadata(profileTIDRouter, map[string]any{"name": "CPU / Router"})
 	r.threadMetadata(profileTIDEPLB, map[string]any{"name": "CPU / EPLB"})
+	r.threadMetadata(profileTIDAggregator, map[string]any{"name": "CPU / Routing aggregator"})
 	r.threadMetadata(profileTIDDispatch, map[string]any{"name": "Network / Dispatch"})
 	r.threadMetadata(profileTIDCombine, map[string]any{"name": "Network / Combine"})
 	r.threadMetadata(profileTIDMigration, map[string]any{"name": "Network / Expert migration"})

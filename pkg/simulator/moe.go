@@ -39,21 +39,22 @@ type moeLatencyCacheKey struct {
 }
 
 type moeSimulator struct {
-	numGPUs             int
-	numExperts          int
-	physicalSlots       int
-	topK                int
-	numLayers           int
-	router              string
-	gpuFlops            float64
-	gpuBandwidth        float64
-	interconnectBW      float64
-	interconnectLatency time.Duration
-	expertWeightBytes   float64
-	flopsPerAssignment  float64
-	activationBytes     float64
-	networkBytes        float64
-	probabilities       []float64
+	numGPUs               int
+	numExperts            int
+	physicalSlots         int
+	topK                  int
+	numLayers             int
+	router                string
+	useDistributedRouting bool
+	gpuFlops              float64
+	gpuBandwidth          float64
+	interconnectBW        float64
+	interconnectLatency   time.Duration
+	expertWeightBytes     float64
+	flopsPerAssignment    float64
+	activationBytes       float64
+	networkBytes          float64
+	probabilities         []float64
 
 	// placements[layer][logicalExpert] is the set of EP ranks that currently
 	// hold a physical copy of that logical expert.
@@ -74,23 +75,25 @@ type moeSimulator struct {
 }
 
 type moeRoutingState struct {
-	active []map[int]struct{}
-	loads  []float64
+	active              []map[int]struct{}
+	loads               []float64
+	sourceToDestination [][]float64
 }
 
 func newMoESimulator(config *common.Configuration) *moeSimulator {
 	m := &moeSimulator{
-		numGPUs:             config.MoEExpertParallelSize,
-		numExperts:          config.MoENumExperts,
-		physicalSlots:       config.MoEPhysicalExpertSlots,
-		topK:                config.MoETopK,
-		numLayers:           config.MoENumLayers,
-		router:              config.MoERouter,
-		gpuFlops:            config.MoEGPUFlops,
-		gpuBandwidth:        config.MoEGPUMemoryBandwidth,
-		interconnectBW:      config.MoEInterconnectBandwidth,
-		interconnectLatency: config.MoEInterconnectLatency,
-		latencyCache:        make(map[moeLatencyCacheKey]time.Duration),
+		numGPUs:               config.MoEExpertParallelSize,
+		numExperts:            config.MoENumExperts,
+		physicalSlots:         config.MoEPhysicalExpertSlots,
+		topK:                  config.MoETopK,
+		numLayers:             config.MoENumLayers,
+		router:                config.MoERouter,
+		useDistributedRouting: config.UseDistributedRouting,
+		gpuFlops:              config.MoEGPUFlops,
+		gpuBandwidth:          config.MoEGPUMemoryBandwidth,
+		interconnectBW:        config.MoEInterconnectBandwidth,
+		interconnectLatency:   config.MoEInterconnectLatency,
+		latencyCache:          make(map[moeLatencyCacheKey]time.Duration),
 	}
 
 	d := float64(config.MoEHiddenSize)
@@ -294,6 +297,12 @@ func (s *moeRoutingState) clone() *moeRoutingState {
 	for gpu := range s.active {
 		for expert := range s.active[gpu] {
 			clone.active[gpu][expert] = struct{}{}
+		}
+	}
+	if s.sourceToDestination != nil {
+		clone.sourceToDestination = make([][]float64, len(s.sourceToDestination))
+		for source := range s.sourceToDestination {
+			clone.sourceToDestination[source] = append([]float64(nil), s.sourceToDestination[source]...)
 		}
 	}
 	return clone
@@ -508,7 +517,7 @@ func (m *moeSimulator) routeHeuristic(counts []float64, placement [][]int) *moeR
 	return state
 }
 
-func (m *moeSimulator) route(counts []float64, placement [][]int) *moeRoutingState {
+func (m *moeSimulator) routeCentral(counts []float64, placement [][]int) *moeRoutingState {
 	switch m.router {
 	case common.MoERouterConcentrate:
 		return m.routeConcentrate(counts, placement)
@@ -519,9 +528,85 @@ func (m *moeSimulator) route(counts []float64, placement [][]int) *moeRoutingSta
 	}
 }
 
+func splitCountsBySource(counts []float64, numGPUs int) [][]float64 {
+	bySource := make([][]float64, numGPUs)
+	for source := range bySource {
+		bySource[source] = make([]float64, len(counts))
+	}
+	for expert, count := range counts {
+		chunks := distributeReplicaTokens(count, numGPUs)
+		for source := range bySource {
+			bySource[source][expert] = chunks[source]
+		}
+	}
+	return bySource
+}
+
+func aggregateDistributedRouting(states []*moeRoutingState, numGPUs int) *moeRoutingState {
+	aggregate := newMoERoutingState(numGPUs)
+	aggregate.sourceToDestination = make([][]float64, numGPUs)
+	for source := range aggregate.sourceToDestination {
+		aggregate.sourceToDestination[source] = make([]float64, numGPUs)
+		if source >= len(states) || states[source] == nil {
+			continue
+		}
+		state := states[source]
+		for destination := 0; destination < numGPUs; destination++ {
+			aggregate.loads[destination] += state.loads[destination]
+			aggregate.sourceToDestination[source][destination] = state.loads[destination]
+			for expert := range state.active[destination] {
+				aggregate.active[destination][expert] = struct{}{}
+			}
+		}
+	}
+	return aggregate
+}
+
+func (m *moeSimulator) routeDistributed(counts []float64, placement [][]int) *moeRoutingState {
+	bySource := splitCountsBySource(counts, m.numGPUs)
+	states := make([]*moeRoutingState, m.numGPUs)
+	for source := 0; source < m.numGPUs; source++ {
+		states[source] = m.routeCentral(bySource[source], placement)
+	}
+	return aggregateDistributedRouting(states, m.numGPUs)
+}
+
+func (m *moeSimulator) route(counts []float64, placement [][]int) *moeRoutingState {
+	if m.useDistributedRouting && m.numGPUs > 1 {
+		return m.routeDistributed(counts, placement)
+	}
+	return m.routeCentral(counts, placement)
+}
+
 func (m *moeSimulator) communicationCost(state *moeRoutingState) float64 {
 	if m.numGPUs <= 1 {
 		return 0
+	}
+	if state.sourceToDestination != nil {
+		maxRemote := 0.0
+		for source := 0; source < len(state.sourceToDestination); source++ {
+			remoteSend := 0.0
+			for destination, assignments := range state.sourceToDestination[source] {
+				if destination != source {
+					remoteSend += assignments
+				}
+			}
+			maxRemote = math.Max(maxRemote, remoteSend)
+		}
+		for destination := 0; destination < m.numGPUs; destination++ {
+			remoteReceive := 0.0
+			for source := 0; source < len(state.sourceToDestination); source++ {
+				if source != destination {
+					remoteReceive += state.sourceToDestination[source][destination]
+				}
+			}
+			maxRemote = math.Max(maxRemote, remoteReceive)
+		}
+		if maxRemote == 0 {
+			return 0
+		}
+		phaseSeconds := maxRemote*m.networkBytes/m.interconnectBW + m.interconnectLatency.Seconds()
+		return 2 * phaseSeconds
 	}
 	maxAssignments := 0.0
 	for _, load := range state.loads {
